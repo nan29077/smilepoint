@@ -1,5 +1,5 @@
-import { animals, banks, escape, faq, format, grades, icon, providers, ticketCategories } from '../catalog.js';
-import { balances, feeFor, grade, kstDay, notificationsFor, partnerAvailable, series, streak, types, visibleTransactions, withdrawnToday } from '../state.js';
+import { animals, banks, escape, faqFor, format, grades, icon, providers, ticketCategories } from '../catalog.js';
+import { activeEvents, balances, feeFor, grade, kstDay, notificationsFor, partnerAvailable, series, streak, types, visibleTransactions, withdrawnToday } from '../state.js';
 import { action, announcementList, avatar, barChart, barcode, blank, button, donut, faqList, maskAccount, metric, money, panel, pill, productCards, productName, progress, providerName, showDate, showTime, table, trend } from './ui.js';
 
 export const userMenu = [
@@ -28,9 +28,9 @@ function partnerExchangeCards(state, me) {
     return `<article class="partner-card ${link ? 'linked' : ''} ${item.active ? '' : 'inactive'}">
       <div class="partner-top"><span class="partner-logo ${item.color}">${item.initials}</span>${link ? pill('연결됨', 'complete') : pill(item.active ? '미연결' : '일시 중지')}</div>
       <h3>${item.name}</h3><p class="partner-rate"><strong>${item.divisor} P</strong>${icon('arrow', 16)}<strong>1 스마일 P</strong></p>
-      <dl class="mini-dl"><div><dt>교환 가능</dt><dd>${link ? format(available) + ' P' : '—'}</dd></div><div><dt>최소 신청</dt><dd>${format(item.min)} P</dd></div><div><dt>승인 시간</dt><dd>${item.approval}</dd></div></dl>
+      <dl class="mini-dl"><div><dt>교환 가능</dt><dd>${!link ? '—' : available === null ? '승인 시 확인' : format(available) + ' P'}</dd></div><div><dt>최소 신청</dt><dd>${format(item.min)} P</dd></div><div><dt>승인 시간</dt><dd>${item.approval}</dd></div></dl>
       <div class="partner-actions">${!item.active ? '<span class="muted small">점검 중입니다</span>' : link
-        ? action('교환하기', 'exchange', `data-id="${item.id}" ${available < item.min ? 'disabled' : ''}`, 'btn primary sm', 'exchange') + action('연결 해제', 'unlink', `data-id="${item.id}"`, 'text-btn')
+        ? action('교환하기', 'exchange', `data-id="${item.id}" ${available !== null && available < item.min ? 'disabled' : ''}`, 'btn primary sm', 'exchange') + action('연결 해제', 'unlink', `data-id="${item.id}"`, 'text-btn')
         : action('계정 연결', 'link', `data-id="${item.id}"`, 'btn outline sm', 'link')}</div>
     </article>`;
   }).join('')}</div>`;
@@ -89,7 +89,8 @@ function overview(state, me) {
 
 function exchangePage(state, me) {
   const pending = visibleTransactions(state, me).filter(row => row.type === 'exchange');
-  return `<div class="notice-bar">${icon('megaphone', 18)}<span><b>이벤트</b> 디스크온 첫 교환 시 5% 추가 적립 (11.30까지)</span></div>
+  const events = activeEvents(state);
+  return `${events.map(event => `<div class="notice-bar">${icon('megaphone', 18)}<span><b>이벤트</b> ${escape(event.title)} · ${escape(state.partners.find(p => p.id === event.partner)?.name ?? '')} ${event.firstOnly ? '첫 교환' : '교환'}이 승인되면 자동으로 추가 적립돼요${event.until ? ` (${Number(event.until.slice(5, 7))}.${Number(event.until.slice(8))}까지)` : ''}</span></div>`).join('')}
     ${partnerExchangeCards(state, me)}
     ${unlinkedNote}
     ${panel('교환 신청 내역', table(state, pending.slice(0, 10), me, { showUpdate: true }), button('전체 보기', '#app/user/activity', 'text-btn', 'chevron'))}`;
@@ -139,17 +140,18 @@ function shopPage(state, me) {
 function couponsPage(state, me, ui) {
   const tab = ui.couponTab ?? 'usable';
   const now = new Date().toISOString();
-  const all = visibleTransactions(state, me).filter(row => row.type === 'coupon' && row.status === 'complete');
-  const groups = { usable: all.filter(row => !row.coupon.used && row.coupon.expires > now), used: all.filter(row => row.coupon.used), expired: all.filter(row => !row.coupon.used && row.coupon.expires <= now) };
-  const labels = { usable: '사용 가능', used: '사용 완료', expired: '기간 만료' };
+  const mine = visibleTransactions(state, me).filter(row => row.type === 'coupon');
+  const all = mine.filter(row => row.status === 'complete');
+  const groups = { usable: all.filter(row => !row.coupon.used && row.coupon.expires > now), used: all.filter(row => row.coupon.used), expired: all.filter(row => !row.coupon.used && row.coupon.expires <= now), canceled: mine.filter(row => row.status === 'canceled') };
+  const labels = { usable: '사용 가능', used: '사용 완료', expired: '기간 만료', canceled: '취소·환불' };
   const list = groups[tab];
   return `<div class="tabs" role="tablist">${Object.entries(labels).map(([id, label]) => `<button type="button" role="tab" class="tab ${tab === id ? 'active' : ''}" aria-selected="${tab === id}" data-action="ui" data-key="couponTab" data-value="${id}">${label} <b>${groups[id].length}</b></button>`).join('')}</div>
     ${list.length ? `<div class="card-grid coupon-grid">${list.map(row => {
       const product = state.products.find(item => item.id === row.product);
       const left = Math.ceil((new Date(row.coupon.expires) - Date.now()) / 86400000);
       return `<article class="coupon ${row.coupon.used ? 'used' : ''}"><div class="coupon-top"><span class="eyebrow">${escape(product?.brand ?? '')}</span>${tab === 'usable' ? pill('D-' + left, left < 15 ? 'pending' : 'complete') : pill(labels[tab])}</div>
-        <h2>${escape(productName(state, row.product))}</h2><button type="button" class="barcode-btn" data-action="barcode" data-id="${row.id}" aria-label="바코드 크게 보기">${barcode(row.coupon.code)}<code>${row.coupon.code.replace(/(\d{4})(?=\d)/g, '$1 ')}</code></button>
-        <div class="coupon-foot"><small>~ ${showDate(row.coupon.expires)} · ${format(row.points)} P</small>${tab === 'usable' ? action('사용 완료', 'coupon-used', `data-id="${row.id}"`, 'text-btn') : tab === 'used' ? action('되돌리기', 'coupon-unused', `data-id="${row.id}"`, 'text-btn') : ''}</div></article>`;
+        <h2>${escape(productName(state, row.product))}</h2>${tab === 'canceled' ? `<p class="canceled-note">취소된 쿠폰입니다${row.reason ? ' · ' + escape(row.reason) : ''}</p>` : `<button type="button" class="barcode-btn" data-action="barcode" data-id="${row.id}" aria-label="바코드 크게 보기">${barcode(row.coupon.code)}<code>${row.coupon.code.replace(/(\d{4})(?=\d)/g, '$1 ')}</code></button>`}
+        <div class="coupon-foot"><small>~ ${showDate(row.coupon.expires)} · ${format(row.points)} P</small>${tab === 'usable' ? `<span class="coupon-actions">${Date.now() - new Date(row.date) <= 7 * 86400000 ? action('취소', 'coupon-cancel', `data-id="${row.id}"`, 'text-btn muted-btn') : ''}${action('사용 완료', 'coupon-used', `data-id="${row.id}"`, 'text-btn')}</span>` : tab === 'used' ? action('되돌리기', 'coupon-unused', `data-id="${row.id}"`, 'text-btn') : tab === 'canceled' ? `<small>${row.points.toLocaleString('ko-KR')} P 환불</small>` : ''}</div></article>`;
     }).join('')}</div>` : blank(tab === 'usable' ? '사용 가능한 쿠폰이 없습니다. 포인트 쇼핑에서 골라 보세요.' : labels[tab] + ' 쿠폰이 없습니다.', 'ticket')}
     ${tab === 'usable' ? `<p class="center">${button('쿠폰 쇼핑하기', '#app/user/shop', 'btn outline', 'shop')}</p>` : ''}`;
 }
@@ -188,7 +190,7 @@ function giftPage(state, me) {
         <label for="gift-msg">메시지 <small class="muted">(선택, 40자)</small></label><input id="gift-msg" name="message" maxlength="40" placeholder="고마워요! 맛있는 거 사 먹어요 :)">
         <div class="form-summary"><div><span>사용 가능</span><strong>${money(bal.available)}</strong></div></div>
         <button class="btn primary" type="submit">선물 보내기 ${icon('send', 17)}</button>
-        <p class="muted small">체험용으로 haneul@example.com, doyun@example.com 등에게 보낼 수 있어요. 선물한 포인트는 되돌릴 수 없습니다.</p></form></section>
+        <p class="muted small">${state.server?.demo !== false ? '데모에서는 haneul@example.com, doyun@example.com 등에게 보낼 수 있어요. ' : ''}선물한 포인트는 되돌릴 수 없습니다.</p></form></section>
     <section class="panel invite-card big"><span class="eyebrow">친구 초대</span><h2>초대하고 함께 ${format(state.settings.referralBonus)} P 받기</h2><p class="muted small">친구가 가입할 때 아래 추천 코드를 입력하면 두 분 모두에게 포인트를 드려요.</p>
       <div class="code-box"><code>${me.referral}</code>${action('복사', 'copy', `data-value="${me.referral}"`, 'btn outline sm', 'copy')}</div>
       <p class="muted small">초대로 받은 포인트 <b>${format(visibleTransactions(state, me).filter(row => row.type === 'reward' && /추천/.test(row.memo ?? '')).reduce((s, r) => s + r.points, 0))} P</b></p></section></div>
@@ -239,7 +241,7 @@ export function supportPage(state, me, viewerIsAdmin = false, ui = {}) {
       <button class="btn primary" type="submit">문의 등록 ${icon('send', 16)}</button></form></section>
     <section class="panel contact-card"><span class="feature-icon tone-1">${icon('help', 24)}</span><h2>고객센터 1588-0000</h2><p class="muted small">평일 10:00 ~ 18:00 (점심 12:00 ~ 13:00)<br>주말·공휴일 휴무 · 1:1 문의는 24시간 접수</p></section></div>
     ${panel('내 문의 내역', list)}
-    ${panel('자주 묻는 질문', faqList(faq))}`;
+    ${panel('자주 묻는 질문', faqList(faqFor(state.settings)))}`;
 }
 
 export function profilePage(state, me) {
@@ -247,7 +249,7 @@ export function profilePage(state, me) {
   return `<div class="dash-grid two-one">
     <section class="panel profile-panel"><div class="profile-current">${avatar(me, 'profile-avatar')}<div><h2>${escape(me.name)}</h2><p>${escape(me.email)} · ${providerName(me.provider)} 가입</p>
       <div class="profile-actions"><label class="btn outline sm" for="profile-photo">${icon('edit', 16)} 사진 올리기</label><input class="sr-only" id="profile-photo" type="file" accept="image/jpeg,image/png,image/webp">
-      ${me.photo ? action('사진 삭제', 'remove-photo', '', 'text-btn') : ''}</div><p class="muted small">직접 올린 사진이 동물 캐릭터보다 우선 표시됩니다.</p></div></div>
+      ${me.photo || me.photoUrl ? action('사진 삭제', 'remove-photo', '', 'text-btn') : ''}</div><p class="muted small">직접 올린 사진이 동물 캐릭터보다 우선 표시됩니다.</p></div></div>
       <div class="panel-head avatar-heading"><h2>동물 캐릭터</h2>${action('무작위', 'random-avatar', '', 'btn outline sm', 'refresh')}</div>
       <div class="avatar-grid">${animals.map((name, i) => `<button type="button" class="avatar-option ${me.avatar === i ? 'selected' : ''}" data-action="avatar" data-id="${i}" aria-pressed="${me.avatar === i}"><img src="./assets/animal-${i + 1}.jpg" alt="" loading="lazy"><span>${name}</span></button>`).join('')}</div>
     </section>

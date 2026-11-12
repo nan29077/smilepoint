@@ -1,5 +1,5 @@
 import { escape, format, icon } from '../catalog.js';
-import { account, kstDay, series, visibleTransactions } from '../state.js';
+import { account, kstDay, series, settlementStatus, visibleTransactions } from '../state.js';
 import { activityFilters, applyFilters } from './user.js';
 import { action, ago, avatar, barChart, blank, button, donut, metric, money, panel, pill, showTime, table, trend } from './ui.js';
 
@@ -55,28 +55,46 @@ function overview(state, me, partner) {
     </div>
     <div class="dash-grid two-one">
       ${pendingQueue(state, me, rows)}
-      <section class="panel api-status"><div class="panel-head"><h2>연동 상태</h2>${pill('정상', 'complete')}</div>
-        <ul class="status-list"><li><i class="ok"></i>잔액 조회 API<small>응답 120ms</small></li><li><i class="ok"></i>교환 차감 API<small>응답 180ms</small></li><li><i class="ok"></i>웹훅 수신<small>${rows[0] ? ago(rows[0].date) : '—'}</small></li></ul>
+      ${apiStatus(state, partner)}
         ${button('API · 연동 관리', '#app/partner/integration', 'text-btn', 'chevron')}</section>
     </div>`;
 }
 
-export function settlementTable(state, rows, partners, days) {
-  const since = Date.now() - days * 86400000;
-  const done = rows.filter(row => row.type === 'exchange' && row.status === 'complete' && new Date(row.updated ?? row.date) >= since);
-  const byPartner = partners.map(item => {
-    const list = done.filter(row => row.partner === item.id);
-    const source = list.reduce((s, r) => s + r.source, 0), points = list.reduce((s, r) => s + r.points, 0);
-    return { item, count: list.length, source, points };
+const settleLabel = { match: ['일치', 'complete'], mismatch: ['불일치', 'rejected'], unconfirmed: ['미확인', 'pending'], empty: ['거래 없음', 'canceled'] };
+function apiStatus(state, partner) {
+  const logs = (state.apiLogs ?? []).filter(item => item.partner === partner.id);
+  const api = logs.filter(item => item.source === 'partner-api'), hooks = logs.filter(item => item.source === 'webhook');
+  const avg = list => list.length ? Math.round(list.slice(0, 20).reduce((s, l) => s + (l.ms ?? 0), 0) / Math.min(list.length, 20)) + 'ms' : '';
+  const ok = list => list.length && list[0].status >= 200 && list[0].status < 300;
+  const line = (label, list) => `<li><i class="${!list.length ? 'idle' : ok(list) ? 'ok' : 'bad'}"></i>${label}<small>${list.length ? `${ok(list) ? '정상' : '실패'} · 평균 ${avg(list)} · ${ago(list[0].date)}` : '기록 없음'}</small></li>`;
+  const overall = !api.length && !hooks.length ? pill('기록 없음') : (api.length && !ok(api)) || (hooks.length && !ok(hooks)) ? pill('확인 필요', 'pending') : pill('정상', 'complete');
+  return `<section class="panel api-status"><div class="panel-head"><h2>연동 상태</h2>${overall}</div>
+        <ul class="status-list">${line('제휴사 → 스마일 API 호출', api)}${line('스마일 → 제휴사 웹훅', hooks)}</ul>
+`;
+}
+
+export function settlementTable(state, partners, days, { canConfirm = false } = {}) {
+  const dates = Array.from({ length: days }, (_, i) => kstDay(Date.now() - i * 86400000));
+  const cells = partners.flatMap(partner => dates.map(date => ({ partner, date, ...settlementStatus(state, partner.id, date) })));
+  const active = cells.filter(cell => cell.status !== 'empty' || cell.theirs);
+  const byPartner = partners.map(partner => {
+    const list = cells.filter(cell => cell.partner.id === partner.id);
+    return { partner, count: list.reduce((s, c) => s + c.ours.count, 0), source: list.reduce((s, c) => s + c.ours.amount, 0), points: list.reduce((s, c) => s + c.ours.points, 0),
+      mismatch: list.filter(c => c.status === 'mismatch').length, unconfirmed: list.filter(c => c.status === 'unconfirmed').length };
   });
-  const total = byPartner.reduce((acc, row) => ({ count: acc.count + row.count, source: acc.source + row.source, points: acc.points + row.points }), { count: 0, source: 0, points: 0 });
-  const daily = series(done, Math.min(days, 14), row => row.points).reverse();
-  return `<div class="summary-strip"><div><span>정산 기간</span><strong>최근 ${days}일</strong></div><div><span>완료 건수</span><strong>${total.count}건</strong></div><div><span>제휴 포인트 차감</span><strong>${format(total.source)} P</strong></div><div><span>스마일 포인트 지급</span><strong>${format(total.points)} P</strong></div><div><span>정산 예정 금액</span><strong>${format(total.points)}원</strong></div></div>
+  const total = byPartner.reduce((acc, row) => ({ count: acc.count + row.count, source: acc.source + row.source, points: acc.points + row.points, mismatch: acc.mismatch + row.mismatch }), { count: 0, source: 0, points: 0, mismatch: 0 });
+  const result = row => row.mismatch ? pill(`불일치 ${row.mismatch}일`, 'rejected') : row.unconfirmed ? pill(`미확인 ${row.unconfirmed}일`, 'pending') : pill(row.count ? '일치' : '거래 없음', row.count ? 'complete' : 'canceled');
+  return `<div class="summary-strip"><div><span>정산 기간</span><strong>최근 ${days}일</strong></div><div><span>완료 건수</span><strong>${total.count}건</strong></div><div><span>제휴 포인트 차감</span><strong>${format(total.source)} P</strong></div><div><span>정산 예정 금액</span><strong>${format(total.points)}원</strong></div><div><span>불일치</span><strong class="${total.mismatch ? 'minus' : ''}">${total.mismatch}일</strong></div></div>
     <section class="panel" data-csv><div class="panel-head"><h2>제휴사별 대사</h2>${action('CSV', 'csv', 'data-name="정산대사"', 'btn outline sm', 'download')}</div>
       <div class="table-scroll"><table><thead><tr><th>제휴사</th><th class="numeric">완료 건</th><th class="numeric">제휴 포인트 차감</th><th class="numeric">스마일 포인트 지급</th><th class="numeric">정산 금액(원)</th><th>대사 결과</th></tr></thead>
-      <tbody>${byPartner.map(row => `<tr><td><strong>${row.item.name}</strong><small>${row.item.divisor}:1</small></td><td class="numeric">${row.count}</td><td class="numeric">${format(row.source)}</td><td class="numeric">${format(row.points)}</td><td class="numeric">${format(row.points)}</td><td>${pill('일치', 'complete')}</td></tr>`).join('')}</tbody></table></div></section>
-    <section class="panel" data-csv><div class="panel-head"><h2>일자별 지급 내역</h2>${action('CSV', 'csv', 'data-name="일자별정산"', 'btn outline sm', 'download')}</div>
-      <div class="table-scroll"><table><thead><tr><th>일자</th><th class="numeric">스마일 포인트 지급</th><th>상태</th></tr></thead><tbody>${daily.map(d => `<tr><td>${d.key}</td><td class="numeric">${format(d.value)}</td><td>${d.value ? pill(d.key === kstDay() ? '집계 중' : '정산 확정', d.key === kstDay() ? 'pending' : 'complete') : '—'}</td></tr>`).join('')}</tbody></table></div></section>`;
+      <tbody>${byPartner.map(row => `<tr><td><strong>${escape(row.partner.name)}</strong><small>${row.partner.divisor}:1</small></td><td class="numeric">${row.count}</td><td class="numeric">${format(row.source)}</td><td class="numeric">${format(row.points)}</td><td class="numeric">${format(row.points)}</td><td>${result(row)}</td></tr>`).join('')}</tbody></table></div></section>
+    <section class="panel" data-csv><div class="panel-head"><h2>일자별 대사</h2>${action('CSV', 'csv', 'data-name="일자별정산"', 'btn outline sm', 'download')}</div>
+      <p class="muted small">제휴사가 자사 장부의 일자별 차감 합계를 확인(화면 또는 <code>POST /api/v1/settlements/{날짜}</code>)하면 스마일 포인트 원장과 비교합니다.</p>
+      ${active.length ? `<div class="table-scroll"><table><thead><tr><th>일자</th>${partners.length > 1 ? '<th>제휴사</th>' : ''}<th class="numeric">우리 집계</th><th class="numeric">제휴사 확인</th><th>결과</th>${canConfirm ? '<th><span class="sr-only">확인</span></th>' : ''}</tr></thead><tbody>${active.map(cell => `<tr>
+        <td>${cell.date}</td>${partners.length > 1 ? `<td>${escape(cell.partner.name)}</td>` : ''}<td class="numeric">${cell.ours.count}건 · ${format(cell.ours.amount)} P</td>
+        <td class="numeric">${cell.theirs ? `${cell.theirs.count}건 · ${format(cell.theirs.amount)} P` : '—'}</td>
+        <td>${pill(settleLabel[cell.status][0] + (cell.status === 'mismatch' ? ` (${cell.diff > 0 ? '+' : ''}${format(cell.diff)} P)` : ''), settleLabel[cell.status][1])}</td>
+        ${canConfirm ? `<td>${cell.date === kstDay() ? '<small class="muted">집계 중</small>' : action(cell.theirs ? '다시 확인' : '확인', 'settle', `data-id="${cell.date}" data-count="${cell.ours.count}" data-amount="${cell.ours.amount}"`, 'text-btn')}</td>` : ''}</tr>`).join('')}</tbody></table></div>` : blank('대사할 거래가 없습니다.')}</section>`;
 }
 
 function integration(state, me, partner, ui) {
@@ -84,9 +102,9 @@ function integration(state, me, partner, ui) {
   const logs = (state.apiLogs ?? []).filter(item => item.partner === partner.id).slice(0, 15);
   const hooks = (state.webhooks ?? []).filter(item => item.partner === partner.id).slice(0, 8);
   const live = state.server?.mode === 'server';
-  const base = live ? location.origin : 'https://api.smilepoint.kr';
+  const base = live ? (globalThis.location?.origin ?? '') : 'https://api.smilepoint.kr';
   const hookPill = h => pill({ delivered: '전송 완료', failed: '전송 실패', retry: '재시도 대기', queued: live ? '전송 대기' : '데모: 전송 안 함', skipped: '주소 없음' }[h.status] ?? h.status, { delivered: 'complete', failed: 'rejected', retry: 'pending', queued: 'pending' }[h.status] ?? 'canceled');
-  return `<div class="notice-bar ${live ? 'ok' : ''}">${icon(live ? 'check' : 'alert', 18)}<span>${live ? `<b>서버 연결됨</b> 아래 API는 지금 이 서버(${escape(location.host)})에서 실제로 호출할 수 있습니다.` : '<b>데모 모드</b> 브라우저 저장소로 동작 중입니다. <code>npm run dev</code>로 서버를 실행하면 실제 API와 웹훅이 동작합니다.'}</span></div>
+  return `<div class="notice-bar ${live ? 'ok' : ''}">${icon(live ? 'check' : 'alert', 18)}<span>${live ? `<b>서버 연결됨</b> 아래 API는 지금 이 서버(${escape(globalThis.location?.host ?? '')})에서 실제로 호출할 수 있습니다.` : '<b>데모 모드</b> 브라우저 저장소로 동작 중입니다. <code>npm run dev</code>로 서버를 실행하면 실제 API와 웹훅이 동작합니다.'}</span></div>
     <div class="dash-grid two-one">
     <section class="panel"><div class="panel-head"><h2>API 키</h2>${pill('운영 키', 'complete')}</div>
       <div class="code-box wide"><code>${key}</code>${action(ui.reveal ? '숨기기' : '보기', 'ui', `data-key="reveal" data-value="${ui.reveal ? '' : '1'}"`, 'btn outline sm', 'eye')}${action('복사', 'copy', `data-value="${partner.apiKey}"`, 'btn outline sm', 'copy')}</div>
@@ -98,7 +116,8 @@ function integration(state, me, partner, ui) {
       <li><b class="get">GET</b><code>/api/v1/exchanges?status=pending</code><small>자사 교환 신청 목록</small></li>
       <li><b class="post">POST</b><code>/api/v1/exchanges/{id}/approve</code><small>승인 · 회원 포인트 적립</small></li>
       <li><b class="post">POST</b><code>/api/v1/exchanges/{id}/reject</code><small>반려 · 본문 <code>{"reason":"사유"}</code></small></li>
-      <li><b class="get">GET</b><code>/api/v1/settlements?date=YYYY-MM-DD</code><small>일자별 대사 자료</small></li></ul>
+      <li><b class="get">GET</b><code>/api/v1/settlements?date=YYYY-MM-DD</code><small>일자별 대사 자료</small></li>
+      <li><b class="post">POST</b><code>/api/v1/settlements/{YYYY-MM-DD}</code><small>자사 합계 제출 <code>{"count":0,"amount":0}</code> → 일치/불일치</small></li></ul>
       <p class="muted small">웹훅 이벤트: <code>exchange.requested</code> <code>exchange.canceled</code> <code>ping</code> · 실패 시 30초 간격 최대 3회 재시도</p>
       <pre class="code-sample">curl -H "X-Api-Key: ${ui.reveal ? partner.apiKey : 'sp_live_…'}" \\
   "${base}/api/v1/exchanges?status=pending"</pre></section></div>
@@ -122,7 +141,7 @@ export function partnerPage(state, me, page, ui, profilePage) {
     case 'overview': return overview(state, me, partner);
     case 'requests': return `${pendingQueue(state, me, rows)}${panel('처리 내역', table(state, rows.filter(row => row.status !== 'pending').slice(0, 30), me, { showUser: true, showUpdate: true }))}`;
     case 'activity': return `${activityFilters(ui, ['exchange'])}<section class="panel" data-csv>${table(state, applyFilters(state, rows, ui), me, { showUser: true, showUpdate: true })}</section>`;
-    case 'settlement': return `<div class="tabs">${[7, 14, 30].map(d => `<button type="button" class="tab ${(Number(ui.days) || 14) === d ? 'active' : ''}" data-action="ui" data-key="days" data-value="${d}">최근 ${d}일</button>`).join('')}</div>${settlementTable(state, rows, [partner], Number(ui.days) || 14)}`;
+    case 'settlement': return `<div class="tabs">${[7, 14, 30].map(d => `<button type="button" class="tab ${(Number(ui.days) || 14) === d ? 'active' : ''}" data-action="ui" data-key="days" data-value="${d}">최근 ${d}일</button>`).join('')}</div>${settlementTable(state, [partner], Number(ui.days) || 14, { canConfirm: true })}`;
     case 'integration': return integration(state, me, partner, ui);
     case 'policy': return policy(state, partner);
     case 'profile': return profilePage(state, me);

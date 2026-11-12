@@ -23,7 +23,8 @@ export const productName = (state, id) => state.products.find(item => item.id ==
 export const maskAccount = number => number ? '••••' + String(number).slice(-4) : '—';
 
 export function avatar(profile, css = '') {
-  const photo = /^data:image\/(?:jpeg|png|webp);base64,[a-z0-9+/=]+$/i.test(profile?.photo ?? '') ? profile.photo : '';
+  const photo = /^data:image\/(?:jpeg|png|webp);base64,[a-z0-9+/=]+$/i.test(profile?.photo ?? '') ? profile.photo
+    : /^\.\/api\/photo\/[\w-]+\?v=[a-f0-9]+$/.test(profile?.photoUrl ?? '') ? profile.photoUrl : '';
   const index = Number.isInteger(profile?.avatar) && animals[profile.avatar] ? profile.avatar : 0;
   return `<img class="avatar ${css}" src="${photo || './assets/animal-' + (index + 1) + '.jpg'}" alt="${photo ? '프로필 사진' : animals[index] + ' 캐릭터'}">`;
 }

@@ -53,7 +53,7 @@ npm.cmd run dev
 | 구분 | 주소 | 인증 |
 | --- | --- | --- |
 | 서비스 | `GET /api/health`, `GET /api/state`, `POST /api/action` | 세션 쿠키 + `X-SmilePoint: 1` 헤더 |
-| 제휴사(웹하드) | `GET /api/v1/exchanges?status=pending`, `POST /api/v1/exchanges/{id}/approve`, `POST /api/v1/exchanges/{id}/reject`, `GET /api/v1/settlements?date=YYYY-MM-DD` | `X-Api-Key` (웹하드 관리자 > API·연동에서 확인) |
+| 제휴사(웹하드) | `GET /api/v1/exchanges?status=pending`, `POST /api/v1/exchanges/{id}/approve`, `POST /api/v1/exchanges/{id}/reject`, `GET /api/v1/settlements?date=YYYY-MM-DD`, `POST /api/v1/settlements/{YYYY-MM-DD}` (자사 합계 `{count, amount}` 제출 → 일치/불일치) | `X-Api-Key` (웹하드 관리자 > API·연동에서 확인) |
 | 소셜 로그인 | `/auth/kakao`, `/auth/naver`, `/auth/google` | `.env`에 키가 있을 때 실제 OAuth, 없으면 데모 동의 화면 |
 
 교환 신청·취소와 테스트 이벤트는 제휴사 웹훅 주소로 전송합니다. 본문은 `X-SmilePoint-Signature: sha256=HMAC(API 키, 본문)`으로 서명하고, 실패하면 30초 간격으로 최대 3회 재시도합니다.
@@ -73,9 +73,19 @@ server.mjs      서버 (정적 파일, API, 세션, 제휴사 API, 웹훅, OAuth
 data/           서버 데이터 (Git에 올리지 않음)
 ```
 
+## 운영 모드와 보안
+
+- `DEMO_MODE=off`로 처음 실행하면 샘플 회원·거래 없이 `ADMIN_EMAIL` 최고 관리자 1명으로 시작합니다. 기존 데이터에 기본 비밀번호(`smile1234`) 계정이 남아 있으면 자동으로 잠그고 로그인 세션도 끊습니다.
+- 운영 모드에서는 웹하드 잔액을 임의로 만들지 않습니다. 교환 신청은 제휴사가 자사 장부를 확인해 승인할 때만 적립됩니다.
+- 비밀번호를 바꾸거나 관리자가 초기화·정지하면 다른 기기의 로그인이 끊깁니다.
+- 웹훅 주소는 https만 허용하고, 내부망·로컬 주소는 등록과 전송 단계에서 모두 막습니다.
+- 가입은 같은 IP에서 1시간 3회로 제한하고, 추천인 보너스는 친구의 첫 교환이 완료된 뒤 지급합니다. 선물은 교환 이력이 있는 회원만, 하루 한도 안에서 보낼 수 있고, 같은 계좌는 한 계정에만 등록됩니다.
+- 비밀번호 찾기는 30분짜리 재설정 링크를 만듭니다. `MAIL_WEBHOOK_URL`이 있으면 메일로 보내고, 없으면 서버 로그와 관리자 알림으로 남깁니다(데모 모드에서는 화면에 링크 표시).
+- 점검 모드를 켜면 회원가입과 사용자의 교환·출금·구매·선물·출석이 막힙니다.
+
 ## 운영 전 남은 일
 
-서버 저장소는 단일 서버용 JSON 파일입니다. 회원이 늘면 PostgreSQL 등 DB로 옮기고, 여러 서버로 늘릴 때는 세션 저장소를 분리합니다. 그 밖에 휴대폰 본인인증, 은행·PG 지급대행 API(자동 이체), 기프티콘 공급사 API, Apple 로그인, 선불전자지급수단 등 규제 검토가 필요합니다.
+서버 저장소는 단일 서버용 JSON 파일입니다. 회원이 늘면 PostgreSQL 등 DB로 옮기고, 여러 서버로 늘릴 때는 세션 저장소를 분리합니다. 그 밖에 휴대폰 본인인증, 은행·PG 지급대행 API(자동 이체), 기프티콘 공급사 API, Apple 로그인, 선불전자지급수단 등 규제 검토, 약관·개인정보처리방침 법률 검토가 필요합니다.
 
 ## 검증
 

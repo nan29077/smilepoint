@@ -19,6 +19,8 @@ export const hashPassword = text => {
 // 서버에서는 scrypt 기반 해시로 교체한다 (server.mjs 참고).
 export const security = {
   hash: text => hashPassword(text),
+  tokenHash: text => hashPassword('token:' + text),
+  token: () => Array.from(globalThis.crypto.getRandomValues(new Uint8Array(24)), b => b.toString(16).padStart(2, '0')).join(''),
   verify: (text, stored) => !!stored && stored === hashPassword(text),
 };
 export class AppError extends Error {
@@ -54,7 +56,7 @@ export function freshState(now = new Date()) {
   ];
   const state = {
     version: 2, seq: 1023,
-    settings: { fee: 500, withdrawalMinimum: 5000, dailyWithdrawLimit: 500000, attendancePoints: 10, attendanceBonus: 50, signupBonus: 1000, referralBonus: 500, giftMinimum: 1000, maintenance: false },
+    settings: { fee: 500, withdrawalMinimum: 5000, dailyWithdrawLimit: 500000, attendancePoints: 10, attendanceBonus: 50, signupBonus: 1000, referralBonus: 500, giftMinimum: 1000, dailyGiftLimit: 100000, maintenance: false, mockWebhardBalance: true },
     session: null,
     partners: partnerSeeds.map((item, i) => ({ ...item, apiKey: 'sp_live_' + code(random, 24), webhook: `https://api.${item.id}.example.com/smilepoint/webhook`, ip: `203.0.113.${10 + i}` })),
     products: productSeeds.map(item => ({ ...item })),
@@ -141,13 +143,31 @@ export function freshState(now = new Date()) {
   }
   log(state, 'a1', '설정 변경', '운영 설정', '출금 수수료 500 P, 최소 출금 5,000 P', at(30));
   log(state, 'a1', '공지 등록', 'n3', '디스크온 제휴 오픈 기념 교환 이벤트', at(0, 8));
+  state.webhardBalances = {};
+  for (const item of state.accounts) for (const [partnerId, link] of Object.entries(item.links ?? {})) {
+    state.webhardBalances[ledgerKey(partnerId, link.loginId)] = link.balance;
+    delete link.balance;
+  }
+  for (const row of state.transactions) if (row.type === 'exchange') row.member = account(state, row.userId)?.links?.[row.partner]?.loginId;
+  state.events = [{ id: 'e1', partner: 'disk', rate: 5, until: '2026-11-30', firstOnly: true, active: true, title: '디스크온 첫 교환 5% 추가 적립' }];
   return state;
+}
+
+// 운영 모드(DEMO_MODE=off)의 첫 데이터: 샘플 회원·거래 없이 최고 관리자 1명으로 시작한다.
+export function productionState({ adminEmail, adminName = '서비스 운영자', passwordHash }) {
+  const fresh = freshState();
+  return {
+    version: 2, seq: 1000, settings: { ...fresh.settings, mockWebhardBalance: false }, session: null,
+    partners: [], products: [], announcements: [], events: [],
+    accounts: [{ id: 'a1', role: 'admin', name: adminName, email: adminEmail, phone: '', provider: 'email', status: 'active', createdAt: new Date().toISOString(), password: passwordHash, avatar: 0, photo: '' }],
+    transactions: [], tickets: [], notifications: [], audit: [], attendance: {}, apiLogs: [], webhooks: [], webhardBalances: {}, resets: [], settlements: {},
+  };
 }
 
 export function load(storage = globalThis.localStorage) {
   try {
     const saved = JSON.parse(storage.getItem(storageKey));
-    if (saved?.version === 2 && Array.isArray(saved.accounts) && Array.isArray(saved.transactions)) return saved;
+    if (saved?.version === 2 && Array.isArray(saved.accounts) && Array.isArray(saved.transactions)) return normalize(saved, true);
   } catch {}
   return freshState();
 }
@@ -190,19 +210,18 @@ export function signup(state, input, now = new Date()) {
   }
   if (!input.terms || !input.privacy || !input.age) fail('필수 약관에 모두 동의해 주세요.');
   const referrer = input.referral ? state.accounts.find(item => item.referral === String(input.referral).trim().toUpperCase()) : null;
-  if (input.referral && !referrer) fail('추천인 코드를 찾을 수 없습니다.');
+  if (input.referral && (!referrer || referrer.role !== 'user')) fail('추천인 코드를 찾을 수 없습니다.');
   const created = {
     id: 'u' + (state.accounts.length + 1) + '-' + now.getTime().toString(36), role: 'user', name, email, phone: String(input.phone ?? '').trim(),
-    provider: input.provider || 'email', status: 'active', createdAt: now.toISOString(), referral: 'SP' + now.getTime().toString(36).slice(-6).toUpperCase(),
+    provider: input.provider || 'email', status: 'active', createdAt: now.toISOString(), referral: uniqueReferral(state),
     password: input.provider && input.provider !== 'email' ? '' : security.hash(input.password), avatar: Math.floor(Math.random() * animals.length), photo: '',
-    bank: null, links: {}, notify: { email: true, sms: false, marketing: !!input.marketing },
+    bank: null, links: {}, notify: { email: true, sms: false, marketing: !!input.marketing }, ...(referrer ? { referredBy: referrer.id, referralPaid: false } : {}),
   };
   state.accounts.push(created);
   credit(state, created.id, 'reward', state.settings.signupBonus, '회원가입 축하 포인트');
   if (referrer) {
     credit(state, created.id, 'reward', state.settings.referralBonus, '추천인 코드 입력 보너스');
-    credit(state, referrer.id, 'reward', state.settings.referralBonus, `${name}님 추천 가입 보너스`);
-    notify(state, referrer.id, `${name}님이 추천 코드로 가입해 ${state.settings.referralBonus} P가 적립되었습니다.`, 'app/user/activity');
+    notify(state, referrer.id, `${name}님이 추천 코드로 가입했어요. 첫 포인트 교환이 완료되면 ${state.settings.referralBonus} P를 드려요.`, 'app/user/gift');
   }
   notify(state, created.id, `가입을 환영합니다! ${state.settings.signupBonus} P를 드렸어요.`, 'app/user/overview');
   notify(state, 'admin', `신규 회원 가입: ${name}`, 'app/admin/members');
@@ -211,21 +230,25 @@ export function signup(state, input, now = new Date()) {
 }
 
 // profile: 실제 OAuth 연동 시 { id, name, email } — 없으면 데모 회원으로 처리한다.
+// profile: 실제 OAuth 연동 시 { id, name, email, emailVerified } — 없으면 데모 회원으로 처리한다.
 export function socialLogin(state, provider, profile = null, now = new Date()) {
   if (!['kakao', 'naver', 'google', 'apple'].includes(provider)) fail('지원하지 않는 로그인 방식입니다.');
   const socialId = profile?.id ? String(profile.id) : 'demo';
   const existing = state.accounts.find(item => item.role === 'user' && item.social?.[provider] === socialId);
   if (existing) return startSession(state, existing, provider);
-  const sameEmail = profile?.email ? byEmail(state, profile.email) : null;
-  if (sameEmail) {
-    if (sameEmail.role !== 'user') fail('관리자 계정은 소셜 로그인을 사용할 수 없습니다.', 403);
+  const names = { kakao: '카카오 회원', naver: '네이버 회원', google: 'Google 회원', apple: 'Apple 회원' };
+  const email = profile?.email && emailPattern.test(profile.email) ? String(profile.email).trim() : '';
+  const sameEmail = email ? byEmail(state, email) : null;
+  // 인증된 이메일일 때만 기존 계정에 연결한다. (미인증 이메일로 남의 계정에 들어가는 것을 막음)
+  if (sameEmail && profile?.emailVerified && sameEmail.role === 'user') {
     sameEmail.social = { ...(sameEmail.social ?? {}), [provider]: socialId };
     return startSession(state, sameEmail, provider);
   }
-  const names = { kakao: '카카오 회원', naver: '네이버 회원', google: 'Google 회원', apple: 'Apple 회원' };
+  let name = String(profile?.name ?? '').trim().replace(/\s+/g, ' ');
+  if (name.length < 2) name = names[provider];
   const created = signup(state, {
-    provider, name: String(profile?.name ?? names[provider]).slice(0, 20).padEnd(2, ' ').trim() || names[provider],
-    email: profile?.email ?? `${provider}.${now.getTime().toString(36)}@social.smilepoint.kr`, terms: true, privacy: true, age: true,
+    provider, name: name.slice(0, 20), email: email && !sameEmail ? email : `${provider}.${now.getTime().toString(36)}${Math.random().toString(36).slice(2, 6)}@social.smilepoint.kr`,
+    terms: true, privacy: true, age: true,
   }, now);
   created.social = { [provider]: socialId };
   return created;
@@ -305,27 +328,41 @@ export function log(state, actorId, action, target, detail = '', date = new Date
 }
 
 // ───────── 웹하드 연결·교환 ─────────
+export const ledgerKey = (partnerId, loginId) => partnerId + ':' + String(loginId).toLowerCase();
 export function linkPartner(state, userId, partnerId, loginId) {
   const target = user(state, userId);
   const partner = partnerOf(state, partnerId) ?? fail('제휴사를 찾을 수 없습니다.');
   const id = String(loginId ?? '').trim();
   if (!/^[a-z0-9_.-]{4,20}$/i.test(id)) fail('웹하드 아이디는 영문·숫자 4~20자로 입력해 주세요.');
   if (target.links[partnerId]) fail('이미 연결된 웹하드입니다.');
-  const balance = 10000 + (([...id].reduce((sum, c) => sum + c.charCodeAt(0), 0) * 37) % 40) * 1000;
-  target.links[partnerId] = { loginId: id, balance: balance - (balance % partner.divisor), linkedAt: new Date().toISOString() };
-  return target.links[partnerId];
+  if (state.accounts.some(item => item.id !== userId && item.links?.[partnerId]?.loginId?.toLowerCase() === id.toLowerCase())) fail('이미 다른 회원이 연결한 웹하드 아이디입니다.');
+  state.webhardBalances ??= {};
+  const key = ledgerKey(partnerId, id);
+  // 데모: 웹하드 잔액을 아이디별로 한 번만 만들고 계속 유지한다 (연결 해제·재연결로 잔액이 늘지 않음).
+  if (state.settings.mockWebhardBalance && !(key in state.webhardBalances)) {
+    const balance = 10000 + (([...id.toLowerCase()].reduce((sum, c) => sum + c.charCodeAt(0), 0) * 37) % 40) * 1000;
+    state.webhardBalances[key] = balance - (balance % partner.divisor);
+  }
+  target.links[partnerId] = { loginId: id, linkedAt: new Date().toISOString() };
+  return { ...target.links[partnerId], balance: partnerAvailable(state, userId, partnerId) };
 }
 export function unlinkPartner(state, userId, partnerId) {
   const target = user(state, userId);
   if (state.transactions.some(row => row.userId === userId && row.partner === partnerId && row.status === 'pending')) fail('처리 대기 중인 교환이 있어 연결을 해제할 수 없습니다.');
   delete target.links[partnerId];
 }
+// 교환 가능 잔액. 운영 모드에서는 웹하드가 승인 시 직접 확인하므로 null(알 수 없음)을 돌려준다.
 export function partnerAvailable(state, userId, partnerId) {
   const link = account(state, userId)?.links?.[partnerId];
   if (!link) return 0;
-  return link.balance - state.transactions
-    .filter(row => row.userId === userId && row.partner === partnerId && ['pending', 'complete'].includes(row.status) && row.date >= link.linkedAt)
+  if (state.available && state.session?.accountId === userId && partnerId in state.available) return state.available[partnerId]; // 서버가 계산해 보낸 값
+  if (!state.settings.mockWebhardBalance) return null;
+  const base = state.webhardBalances?.[ledgerKey(partnerId, link.loginId)] ?? link.balance ?? 0;
+  const member = link.loginId.toLowerCase();
+  const used = state.transactions
+    .filter(row => row.type === 'exchange' && row.partner === partnerId && ['pending', 'complete'].includes(row.status) && (row.member ? row.member.toLowerCase() === member : row.userId === userId))
     .reduce((sum, row) => sum + row.source, 0);
+  return Math.max(0, base - used);
 }
 export function exchange(state, userId, partnerId, amount) {
   user(state, userId);
@@ -333,8 +370,9 @@ export function exchange(state, userId, partnerId, amount) {
   if (!partner?.active) fail('현재 교환할 수 없는 제휴사입니다.');
   if (!account(state, userId).links[partnerId]) fail('먼저 웹하드 계정을 연결해 주세요.');
   amount = int(amount);
-  if (!(amount >= partner.min) || amount > partnerAvailable(state, userId, partnerId) || amount % partner.divisor) fail('교환 가능 잔액, 최소 금액과 교환 단위를 확인해 주세요.');
-  const row = record(state, { userId, type: 'exchange', partner: partnerId, source: amount, points: amount / partner.divisor, rate: partner.divisor, status: 'pending' });
+  const available = partnerAvailable(state, userId, partnerId);
+  if (!(amount >= partner.min) || (available !== null && amount > available) || amount % partner.divisor || amount > 10000000) fail('교환 가능 잔액, 최소 금액과 교환 단위를 확인해 주세요.');
+  const row = record(state, { userId, type: 'exchange', partner: partnerId, member: account(state, userId).links[partnerId].loginId, source: amount, points: amount / partner.divisor, rate: partner.divisor, status: 'pending' });
   notify(state, 'partner:' + partnerId, `새 교환 신청이 접수되었습니다. (${amount.toLocaleString('ko-KR')} P)`, 'app/partner/requests');
   queueWebhook(state, partnerId, 'exchange.requested', { exchangeId: row.id, member: account(state, userId).links[partnerId].loginId, amount, points: row.points, rate: row.rate });
   return row;
@@ -348,6 +386,7 @@ export function setBank(state, userId, { bank, number, holder }) {
   if (digits.length < 10 || digits.length > 16) fail('계좌번호는 숫자 10~16자리로 입력해 주세요.');
   if (String(holder ?? '').trim() !== target.name) fail(`예금주가 회원 이름(${target.name})과 일치해야 합니다.`);
   if (state.transactions.some(row => row.userId === userId && row.type === 'withdrawal' && row.status === 'pending')) fail('처리 중인 출금이 있어 계좌를 바꿀 수 없습니다.');
+  if (state.accounts.some(item => item.id !== userId && item.bank?.bank === bank && item.bank?.number === digits)) fail('다른 계정에 등록된 계좌입니다. 고객센터로 문의해 주세요.');
   target.bank = { bank, number: digits, holder: target.name, verified: true, verifiedAt: new Date().toISOString() };
   return target.bank;
 }
@@ -410,14 +449,19 @@ export function attend(state, userId, now = new Date()) {
   if (count % 7 === 0) rows.push(credit(state, userId, 'reward', state.settings.attendanceBonus, `${count}일 연속 출석 보너스`));
   return { count, points: rows.reduce((sum, row) => sum + row.points, 0) };
 }
+export function giftedToday(state, userId) {
+  const today = kstDay();
+  return state.transactions.filter(row => row.userId === userId && row.type === 'gift_out' && row.status === 'complete' && kstDay(row.date) === today).reduce((sum, row) => sum + row.points, 0);
+}
 export function gift(state, userId, email, amount, message = '') {
   const sender = user(state, userId);
   const receiver = byEmail(state, email);
   amount = int(amount);
-  if (!receiver || receiver.role !== 'user') fail('받는 분의 이메일을 확인해 주세요.');
-  if (receiver.id === userId) fail('본인에게는 선물할 수 없습니다.');
-  if (receiver.status !== 'active') fail('받는 분의 계정을 이용할 수 없는 상태입니다.');
+  // 받는 분이 없거나 받을 수 없는 계정이면 같은 문구로 안내한다 (가입 여부 노출 방지).
+  if (!receiver || receiver.role !== 'user' || receiver.status !== 'active' || receiver.id === userId) fail('선물할 수 없는 이메일입니다. 받는 분의 가입 이메일을 확인해 주세요.');
+  if (!state.transactions.some(row => row.userId === userId && row.type === 'exchange' && row.status === 'complete')) fail('포인트 교환을 1회 이상 완료한 뒤 선물할 수 있습니다.');
   if (!(amount >= state.settings.giftMinimum) || amount > balances(state, userId).available) fail(`선물은 ${state.settings.giftMinimum.toLocaleString('ko-KR')} P 이상, 사용 가능 포인트 이내로 보낼 수 있습니다.`);
+  if (giftedToday(state, userId) + amount > (state.settings.dailyGiftLimit ?? 100000)) fail('오늘 선물 한도를 넘었습니다.');
   const memo = String(message).trim().slice(0, 40);
   const row = record(state, { userId, type: 'gift_out', points: amount, status: 'complete', counterpart: receiver.id, memo });
   record(state, { userId: receiver.id, type: 'gift_in', points: amount, status: 'complete', counterpart: userId, memo });
@@ -451,6 +495,7 @@ export function update(state, actorId, id, status, reason = '') {
   const owner = account(state, row.userId);
   const amount = row.points.toLocaleString('ko-KR');
   if (status === 'canceled' && row.type === 'exchange') queueWebhook(state, row.partner, 'exchange.canceled', { exchangeId: row.id });
+  if (status === 'complete' && row.type === 'exchange') afterExchange(state, row, owner);
   if (status !== 'canceled') {
     const label = row.type === 'exchange' ? `${partnerOf(state, row.partner)?.name} 교환 ${amount} P` : `출금 ${amount} P`;
     notify(state, row.userId, status === 'complete' ? `${label}${row.type === 'exchange' ? '가 적립되었습니다.' : '가 지급되었습니다.'}` : `${label} 신청이 반려되었습니다. 사유: ${row.reason}`, 'app/user/activity');
@@ -566,8 +611,10 @@ export function setWebhook(state, actorId, url) {
   const viewer = account(state, actorId);
   const partner = viewer?.role === 'partner' ? partnerOf(state, viewer.partnerId) : fail('웹하드 관리자만 변경할 수 있습니다.');
   let parsed;
-  try { parsed = new URL(url); } catch { fail('올바른 URL을 입력해 주세요.'); }
+  try { parsed = new URL(String(url ?? '').trim()); } catch { fail('올바른 URL을 입력해 주세요.'); }
   if (parsed.protocol !== 'https:') fail('웹훅 주소는 https:// 로 시작해야 합니다.');
+  if (parsed.username || parsed.password) fail('웹훅 주소에 계정 정보를 넣을 수 없습니다.');
+  if (isPrivateHost(parsed.hostname)) fail('내부망·로컬 주소는 웹훅으로 등록할 수 없습니다.');
   partner.webhook = parsed.href;
   log(state, actorId, '웹훅 변경', partner.name, parsed.href);
 }
@@ -686,23 +733,27 @@ export function snapshot(state, viewer) {
     announcements: state.announcements.filter(item => viewer?.role === 'admin' || item.visible),
     stats: publicStats(state), session: viewer ? { accountId: viewer.id } : null,
     partners: state.partners.map(publicPartner), accounts: [], transactions: [], tickets: [], notifications: [], audit: [], attendance: {}, apiLogs: [], webhooks: [],
+    events: viewer?.role === 'admin' ? (state.events ?? []) : activeEvents(state), settlements: {},
   };
   if (!viewer) return base;
   const mine = notificationsFor(state, viewer);
   if (viewer.role === 'admin') {
-    return { ...base, ...state, partners: state.partners, accounts: state.accounts.map(privateAccount), notifications: mine, session: base.session, stats: base.stats };
+    const { resets, ...rest } = state;
+    return { ...base, ...rest, partners: state.partners, accounts: state.accounts.map(privateAccount), notifications: mine, session: base.session, stats: base.stats, events: base.events };
   }
   if (viewer.role === 'partner') {
     const rows = state.transactions.filter(row => row.type === 'exchange' && row.partner === viewer.partnerId);
     const ids = new Set(rows.map(row => row.userId));
     return { ...base, partners: state.partners.map(p => p.id === viewer.partnerId ? p : publicPartner(p)),
       accounts: [privateAccount(viewer), ...state.accounts.filter(a => ids.has(a.id)).map(brief)], transactions: rows, notifications: mine,
-      apiLogs: (state.apiLogs ?? []).filter(item => item.partner === viewer.partnerId).slice(0, 100), webhooks: (state.webhooks ?? []).filter(item => item.partner === viewer.partnerId).slice(0, 50) };
+      apiLogs: (state.apiLogs ?? []).filter(item => item.partner === viewer.partnerId).slice(0, 100), webhooks: (state.webhooks ?? []).filter(item => item.partner === viewer.partnerId).slice(0, 50),
+      settlements: Object.fromEntries(Object.entries(state.settlements ?? {}).filter(([key]) => key.startsWith(viewer.partnerId + ':'))) };
   }
   const rows = state.transactions.filter(row => row.userId === viewer.id);
   const others = new Set(rows.map(row => row.counterpart).filter(Boolean));
   return { ...base, accounts: [privateAccount(viewer), ...state.accounts.filter(a => others.has(a.id)).map(brief)], transactions: rows,
-    tickets: state.tickets.filter(item => item.userId === viewer.id), notifications: mine, attendance: { [viewer.id]: state.attendance[viewer.id] ?? [] } };
+    tickets: state.tickets.filter(item => item.userId === viewer.id), notifications: mine, attendance: { [viewer.id]: state.attendance[viewer.id] ?? [] },
+    available: Object.fromEntries(Object.keys(viewer.links ?? {}).map(id => [id, partnerAvailable(state, viewer.id, id)])) };
 }
 
 // 웹훅은 대기열에 쌓고, 실서버(server.mjs)가 비동기로 전송해 결과를 기록한다.
@@ -710,4 +761,158 @@ export function queueWebhook(state, partnerId, event, data) {
   state.webhooks ??= [];
   state.webhooks.unshift({ id: 'W-' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6), partner: partnerId, event, data, status: 'queued', attempts: 0, date: new Date().toISOString() });
   state.webhooks.length = Math.min(state.webhooks.length, 300);
+}
+
+function uniqueReferral(state) {
+  for (;;) {
+    const code = 'SP' + Array.from({ length: 6 }, () => 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'[Math.floor(Math.random() * 32)]).join('');
+    if (!state.accounts.some(item => item.referral === code)) return code;
+  }
+}
+
+// 교환 승인 후: 추천인 보너스(첫 교환 완료 시) · 진행 중인 교환 이벤트 적립
+function afterExchange(state, row, owner) {
+  if (!owner) return;
+  if (owner.referredBy && !owner.referralPaid) {
+    const referrer = account(state, owner.referredBy);
+    owner.referralPaid = true;
+    if (referrer?.status === 'active') {
+      credit(state, referrer.id, 'reward', state.settings.referralBonus, `${owner.name}님 추천 보너스 (첫 교환 완료)`);
+      notify(state, referrer.id, `${owner.name}님이 첫 교환을 완료해 추천 보너스 ${state.settings.referralBonus} P가 적립되었습니다.`, 'app/user/activity');
+    }
+  }
+  const today = kstDay();
+  for (const event of activeEvents(state).filter(item => item.partner === row.partner)) {
+    if (event.until && today > event.until) continue;
+    const earlier = state.transactions.some(other => other.id !== row.id && other.userId === row.userId && other.type === 'exchange' && other.partner === row.partner && other.status === 'complete');
+    if (event.firstOnly && earlier) continue;
+    const bonus = Math.floor(row.points * event.rate / 100);
+    if (bonus > 0) {
+      credit(state, row.userId, 'reward', bonus, `${event.title}`);
+      notify(state, row.userId, `${event.title}: ${bonus.toLocaleString('ko-KR')} P가 추가 적립되었습니다.`, 'app/user/activity');
+    }
+  }
+}
+export const activeEvents = state => (state.events ?? []).filter(item => item.active && (!item.until || kstDay() <= item.until));
+
+// 내부망·로컬 주소 판별 (웹훅이 서버 내부를 호출하지 못하게 함). 서버는 전송 직전 DNS 결과도 다시 검사한다.
+export function isPrivateHost(host) {
+  host = String(host ?? '').toLowerCase().replace(/^\[|\]$/g, '');
+  if (!host || host === 'localhost' || /\.(localhost|local|internal|lan|home|corp)$/.test(host) || !host.includes('.') && !host.includes(':')) return true;
+  return isPrivateIp(host);
+}
+export function isPrivateIp(ip) {
+  ip = String(ip ?? '').toLowerCase();
+  if (ip.startsWith('::ffff:')) ip = ip.slice(7);
+  const v4 = ip.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+  if (v4) {
+    const [a, b] = [Number(v4[1]), Number(v4[2])];
+    return a === 0 || a === 10 || a === 127 || (a === 100 && b >= 64 && b <= 127) || (a === 169 && b === 254) || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168) || (a === 198 && (b === 18 || b === 19)) || a >= 224;
+  }
+  if (ip.includes(':')) return ip === '::' || ip === '::1' || /^f[cd]/.test(ip) || /^fe[89ab]/.test(ip);
+  return false;
+}
+
+// ───────── 비밀번호 재설정 ─────────
+export function requestReset(state, email, now = Date.now()) {
+  const target = byEmail(state, email);
+  state.resets = (state.resets ?? []).filter(item => item.expires > now);
+  if (!target || !target.password || target.status !== 'active') return null; // 존재 여부는 알리지 않는다.
+  if (state.resets.filter(item => item.accountId === target.id).length >= 3) return null;
+  const token = security.token();
+  state.resets.push({ hash: security.tokenHash(token), accountId: target.id, expires: now + 30 * 60000 });
+  return { token, account: target };
+}
+export function resetWithToken(state, token, password, now = Date.now()) {
+  const hash = security.tokenHash(String(token ?? ''));
+  const entry = (state.resets ?? []).find(item => item.hash === hash && item.expires > now);
+  if (!entry) fail('링크가 만료되었거나 올바르지 않습니다. 비밀번호 찾기를 다시 진행해 주세요.');
+  const target = account(state, entry.accountId);
+  password = String(password ?? '');
+  if (password.length < 8 || !/[a-z]/i.test(password) || !/\d/.test(password)) fail('새 비밀번호는 영문과 숫자를 포함해 8자 이상이어야 합니다.');
+  target.password = security.hash(password);
+  state.resets = state.resets.filter(item => item.accountId !== target.id);
+  log(state, target.id, '비밀번호 재설정', target.email, '재설정 링크 사용');
+  return target;
+}
+
+// ───────── 쿠폰 취소·환불 ─────────
+export function cancelCoupon(state, actorId, id, reason = '') {
+  const actor = account(state, actorId);
+  const row = state.transactions.find(item => item.id === id && item.type === 'coupon');
+  if (!row || !actor) fail('쿠폰을 찾을 수 없습니다.');
+  const isAdmin = actor.role === 'admin';
+  if (!isAdmin && row.userId !== actorId) fail('쿠폰을 찾을 수 없습니다.');
+  if (row.status !== 'complete') fail('이미 취소된 쿠폰입니다.');
+  if (row.coupon?.used) fail('사용한 쿠폰은 취소할 수 없습니다.');
+  if (!isAdmin && Date.now() - new Date(row.date) > 7 * 86400000) fail('구매 후 7일이 지나 취소할 수 없습니다. 고객센터로 문의해 주세요.');
+  if (isAdmin && !String(reason).trim()) fail('취소 사유를 입력해 주세요.');
+  row.status = 'canceled';
+  row.updated = new Date().toISOString();
+  row.handler = actorId;
+  if (reason) row.reason = String(reason).trim().slice(0, 100);
+  const product = state.products.find(item => item.id === row.product);
+  if (product) product.stock += 1;
+  if (isAdmin) {
+    notify(state, row.userId, `쿠폰 구매가 취소되어 ${row.points.toLocaleString('ko-KR')} P가 환불되었습니다. 사유: ${row.reason}`, 'app/user/coupons');
+    log(state, actorId, '쿠폰 취소', row.id, `${product?.name ?? ''} · ${row.points} P · ${row.reason}`);
+  }
+  return row;
+}
+
+// ───────── 정산 대사 ─────────
+// 제휴사가 자기 장부의 일자별 합계를 확인(입력)하면 우리 원장과 비교한다.
+export function settlementOurs(state, partnerId, date) {
+  const rows = state.transactions.filter(row => row.type === 'exchange' && row.partner === partnerId && row.status === 'complete' && kstDay(row.updated ?? row.date) === date);
+  return { count: rows.length, amount: rows.reduce((sum, row) => sum + row.source, 0), points: rows.reduce((sum, row) => sum + row.points, 0) };
+}
+export function settlementStatus(state, partnerId, date) {
+  const ours = settlementOurs(state, partnerId, date);
+  const theirs = state.settlements?.[partnerId + ':' + date] ?? null;
+  const status = !theirs ? (ours.count ? 'unconfirmed' : 'empty') : theirs.count === ours.count && theirs.amount === ours.amount ? 'match' : 'mismatch';
+  return { ours, theirs, status, diff: theirs ? theirs.amount - ours.amount : 0 };
+}
+export function confirmSettlement(state, partnerId, date, { count, amount }, by = 'partner-api') {
+  if (!partnerOf(state, partnerId)) fail('제휴사를 찾을 수 없습니다.');
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(String(date)) || date > kstDay()) fail('대사 일자를 확인해 주세요.');
+  count = int(Number(count)); amount = int(Number(amount));
+  if (!(count >= 0) || !(amount >= 0)) fail('건수와 금액을 확인해 주세요.');
+  state.settlements ??= {};
+  state.settlements[partnerId + ':' + date] = { count, amount, by, at: new Date().toISOString() };
+  const result = settlementStatus(state, partnerId, date);
+  if (result.status === 'mismatch') notify(state, 'admin', `${partnerOf(state, partnerId).name} ${date} 정산 불일치 (차이 ${result.diff.toLocaleString('ko-KR')} P)`, 'app/admin/settlement');
+  return result;
+}
+
+// ───────── 교환 이벤트 ─────────
+export function setEventActive(state, adminId, id, active) {
+  admin(state, adminId);
+  const event = (state.events ?? []).find(item => item.id === id) ?? fail('이벤트를 찾을 수 없습니다.');
+  event.active = !!active;
+  log(state, adminId, active ? '이벤트 시작' : '이벤트 중지', event.title, '');
+}
+export function createEvent(state, adminId, { partner, rate, until, title, firstOnly }) {
+  admin(state, adminId);
+  if (!partnerOf(state, partner)) fail('제휴사를 선택해 주세요.');
+  rate = int(Number(rate));
+  if (!(rate >= 1 && rate <= 50)) fail('추가 적립률은 1~50% 사이로 입력해 주세요.');
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(String(until)) || until < kstDay()) fail('종료일을 오늘 이후로 선택해 주세요.');
+  title = String(title ?? '').trim() || `${partnerOf(state, partner).name} 교환 ${rate}% 추가 적립`;
+  const event = { id: 'e' + Date.now().toString(36), partner, rate, until, title: title.slice(0, 40), firstOnly: !!firstOnly, active: true };
+  (state.events ??= []).unshift(event);
+  log(state, adminId, '이벤트 등록', event.title, `${rate}% · ~${until}${firstOnly ? ' · 첫 교환만' : ''}`);
+  return event;
+}
+
+// 이전 버전에 저장된 데이터에 새 항목의 기본값을 채운다.
+export function normalize(state, demo = true) {
+  state.settings = { fee: 500, withdrawalMinimum: 5000, dailyWithdrawLimit: 500000, attendancePoints: 10, attendanceBonus: 50, signupBonus: 1000, referralBonus: 500, giftMinimum: 1000, dailyGiftLimit: 100000, maintenance: false, ...state.settings };
+  state.settings.mockWebhardBalance ??= demo;
+  state.events ??= [];
+  state.webhardBalances ??= {};
+  state.resets ??= [];
+  state.settlements ??= {};
+  state.apiLogs ??= [];
+  state.webhooks ??= [];
+  return state;
 }

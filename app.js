@@ -3,7 +3,8 @@ import { animals, config, escape, format, icon, providers, socialMark } from './
 import * as S from './state.js';
 import { memberDetail, partnerForm, productForm } from './views/admin.js';
 import { dashboard, pages, pageTitle } from './views/dashboard.js';
-import { hero, landing, login, signup, slides } from './views/site.js';
+import { legalBody } from './views/legal.js';
+import { hero, landing, legalPage, login, resetPage, signup, slides } from './views/site.js';
 import { barcode, details, filteredProducts, money, productVisual, showDate } from './views/ui.js';
 import { notificationList } from './views/user.js';
 
@@ -14,6 +15,7 @@ const landingIds = new Set(['partners', 'withdraw', 'shop', 'guide', 'support'])
 let state = S.load();
 let server = { mode: 'demo', demo: true, oauth: {} };
 let pollTimer;
+let dirty = false;
 let slideIndex = 0;
 let slideTimer;
 let route;
@@ -58,8 +60,13 @@ async function boot() {
   if (live()) pollTimer = setInterval(poll, 15000);
 }
 // 서버 모드: 다른 관리자·회원의 처리 결과를 주기적으로 반영한다.
+// 작성 중인 입력·선택이 있으면 화면을 다시 그리지 않는다 (입력값 보존).
+function busy() {
+  return dirty || modal.open || document.body.classList.contains('menu-open') || !!document.querySelector('[data-select]:checked, .create-box[open]')
+    || document.activeElement?.matches('input, textarea, select');
+}
 async function poll() {
-  if (document.hidden || modal.open || route?.view !== 'dashboard' || document.activeElement?.matches('input, textarea, select')) return;
+  if (document.hidden || route?.view !== 'dashboard' || busy()) return;
   try {
     const data = await api('./api/state');
     const before = JSON.stringify({ ...state, server: 0 });
@@ -76,6 +83,8 @@ function getRoute() {
   }
   if (section === 'login') return { view: 'login' };
   if (section === 'signup') return { view: 'signup' };
+  if (section === 'terms' || section === 'privacy') return { view: 'legal', page: section };
+  if (section === 'reset' && /^[\w-]{16,}$/.test(role ?? '')) return { view: 'reset', token: role };
   return { view: 'landing', anchor: landingIds.has(section) ? section : '' };
 }
 
@@ -102,10 +111,12 @@ function render(keepScroll = false) {
   const caret = focusKey ? active.selectionStart : null;
 
   document.title = route.view === 'dashboard' ? `${pageTitle(route.role, route.page)} | ${config.name}`
-    : route.view === 'login' ? `로그인 | ${config.name}` : route.view === 'signup' ? `회원가입 | ${config.name}` : `${config.name} - 흩어진 포인트를 한곳에`;
+    : route.view === 'login' ? `로그인 | ${config.name}` : route.view === 'signup' ? `회원가입 | ${config.name}` : route.view === 'legal' ? `${route.page === 'privacy' ? '개인정보처리방침' : '이용약관'} | ${config.name}` : route.view === 'reset' ? `비밀번호 재설정 | ${config.name}` : `${config.name} - 흩어진 포인트를 한곳에`;
   if (route.view === 'dashboard') app.innerHTML = dashboard(state, viewer, route.page, ui);
   else if (route.view === 'login') app.innerHTML = login(state);
   else if (route.view === 'signup') app.innerHTML = signup(state);
+  else if (route.view === 'legal') app.innerHTML = legalPage(state, route.page);
+  else if (route.view === 'reset') app.innerHTML = resetPage(state, route.token);
   else if (!keepScroll || previous?.view !== 'landing') { app.innerHTML = landing(state, slideIndex); startSlides(); }
   else app.innerHTML = landing(state, slideIndex);
   if (route.view !== 'landing') clearInterval(slideTimer);
@@ -138,6 +149,7 @@ function dialog(title, body, css = '') {
 
 function refresh(message, tone) {
   if (modal.open) modal.close();
+  dirty = false;
   render(true);
   if (message) notify(message, tone);
 }
@@ -172,10 +184,10 @@ function exchangeDialog(id) {
   const available = S.partnerAvailable(state, viewer.id, id);
   dialog(item.name + ' 포인트 교환', `<p class="muted">${item.type} · ${item.divisor} P당 1 스마일 P · 최소 ${format(item.min)} P · ${item.approval}</p>
     <form class="stack" data-form="exchange" data-id="${id}"><label for="exchange-amount">교환할 ${item.name} 포인트</label>
-    <div class="amount-field"><input id="exchange-amount" data-divisor="${item.divisor}" name="amount" type="number" min="${item.min}" max="${available}" step="${item.divisor}" required placeholder="${format(item.min)}"><span>P</span></div>
-    <div class="chips"><button type="button" class="chip" data-action="fill" data-target="exchange-amount" data-value="${item.min}">최소</button><button type="button" class="chip" data-action="fill" data-target="exchange-amount" data-value="${available - (available % item.divisor)}">전액</button></div>
-    <div class="form-summary"><div><span>교환 가능</span><strong>${money(available)}</strong></div><div class="total"><span>받을 스마일 포인트</span><strong id="exchange-net">0 P</strong></div></div>
-    <button class="btn primary block" type="submit" ${available < item.min ? 'disabled' : ''}>교환 신청 ${icon('arrow', 17)}</button>
+    <div class="amount-field"><input id="exchange-amount" data-divisor="${item.divisor}" name="amount" type="number" min="${item.min}" ${available === null ? '' : `max="${available}"`} step="${item.divisor}" required placeholder="${format(item.min)}"><span>P</span></div>
+    <div class="chips"><button type="button" class="chip" data-action="fill" data-target="exchange-amount" data-value="${item.min}">최소</button>${available === null ? '' : `<button type="button" class="chip" data-action="fill" data-target="exchange-amount" data-value="${available - (available % item.divisor)}">전액</button>`}</div>
+    <div class="form-summary"><div><span>교환 가능</span><strong>${available === null ? `${item.name} 승인 시 확인` : money(available)}</strong></div><div class="total"><span>받을 스마일 포인트</span><strong id="exchange-net">0 P</strong></div></div>
+    <button class="btn primary block" type="submit" ${available !== null && available < item.min ? 'disabled' : ''}>교환 신청 ${icon('arrow', 17)}</button>
     <p class="muted small">신청 후 ${item.name} 승인 시 사용 가능 포인트로 적립됩니다. 승인 전에는 거래 내역에서 취소할 수 있어요.</p></form>`);
 }
 function linkDialog(id) {
@@ -205,7 +217,9 @@ function transactionDialog(id) {
   const row = S.visibleTransactions(state, viewer).find(item => item.id === id);
   if (!row) return;
   const options = [['complete', row.type === 'withdrawal' ? '지급 완료' : '승인'], ['rejected', '반려'], ['canceled', '신청 취소']].filter(([status]) => S.canUpdate(row, viewer, status));
+  const couponCancel = viewer.role === 'admin' && row.type === 'coupon' && row.status === 'complete' && !row.coupon?.used;
   dialog('거래 상세', `${details(state, row)}
+    ${couponCancel ? `<label for="reject-reason" class="small-label">취소 사유 <small class="muted">(회원에게 안내됩니다)</small></label><input id="reject-reason" maxlength="100" placeholder="예: 공급사 품절로 발행 불가"><div class="dialog-actions"><button class="btn danger" type="button" data-action="coupon-cancel-confirm" data-id="${row.id}">주문 취소·환불</button></div>` : ''}
     ${options.some(([s]) => s === 'rejected') ? `<label for="reject-reason" class="small-label">반려 사유 <small class="muted">(반려 시 필수)</small></label><input id="reject-reason" maxlength="100" placeholder="예: 판매 포인트 정산 보류">` : ''}
     <div class="dialog-actions">${options.map(([status, label]) => `<button class="btn ${status === 'complete' ? 'primary' : status === 'rejected' ? 'danger' : 'outline'}" type="button" data-action="status" data-id="${row.id}" data-value="${status}">${label}</button>`).join('')}
     ${viewer.role === 'user' ? `<a class="btn outline" href="#app/user/support" data-action="close">이 거래 문의하기</a>` : ''}</div>`);
@@ -222,7 +236,9 @@ function socialDialog(provider) {
 function downloadCsv(scope, name) {
   const tableEl = scope?.querySelector('table');
   if (!tableEl) { notify('내보낼 데이터가 없습니다.'); return; }
-  const lines = [...tableEl.rows].map(tr => [...tr.cells].filter(cell => !cell.querySelector('input[type=checkbox]')).map(cell => `"${cell.innerText.replace(/\s*\n\s*/g, ' ').replace(/"/g, '""').trim()}"`).join(','));
+  // 엑셀에서 수식으로 실행되지 않도록 =, +, -, @ 로 시작하는 값 앞에 ' 를 붙인다 (숫자는 그대로).
+  const safe = text => /^[=+@\t\r]/.test(text) || (/^-/.test(text) && !/^-[\d,.\s]+(P|원)?$/.test(text)) ? "'" + text : text;
+  const lines = [...tableEl.rows].map(tr => [...tr.cells].filter(cell => !cell.querySelector('input[type=checkbox]')).map(cell => `"${safe(cell.innerText.replace(/\s*\n\s*/g, ' ').trim()).replace(/"/g, '""')}"`).join(','));
   const blob = new Blob(['﻿' + lines.join('\r\n')], { type: 'text/csv;charset=utf-8' });
   const link = Object.assign(document.createElement('a'), { href: URL.createObjectURL(blob), download: `${name}_${S.kstDay()}.csv` });
   link.click();
@@ -247,7 +263,9 @@ async function onAction(event) {
     case 'site-menu':
     case 'dash-menu': {
       const menu = document.getElementById(trigger.getAttribute('aria-controls'));
-      trigger.setAttribute('aria-expanded', menu.classList.toggle('open'));
+      const opened = !menu.classList.contains('open');
+      closeMenus();
+      if (opened) { menu.classList.add('open'); trigger.setAttribute('aria-expanded', 'true'); document.body.classList.add('menu-open'); }
       break;
     }
     case 'slide': slide(Number(index), action); startSlides(); break;
@@ -335,7 +353,17 @@ async function onAction(event) {
       break;
     case 'reset-confirm': await act('resetDemo'); refresh('데모 데이터를 초기화했습니다.'); break;
     case 'csv': downloadCsv(trigger.closest('[data-csv]') ?? trigger.closest('.dash-content')?.querySelector('[data-csv]'), name ?? '내보내기'); break;
-    case 'policy': dialog(value === 'privacy' ? '개인정보처리방침' : '이용약관', `<p class="muted">${config.name}(가칭)의 ${value === 'privacy' ? '개인정보처리방침' : '이용약관'}은 서비스 정식 오픈 전에 법률 검토를 거쳐 게시됩니다.</p>`, 'narrow'); break;
+    case 'policy': dialog(value === 'privacy' ? '개인정보처리방침' : '이용약관', `<div class="legal-dialog">${legalBody(value)}</div>`, 'wide'); break;
+    case 'coupon-cancel':
+      dialog('쿠폰 취소', `<p>쿠폰을 취소하고 사용한 포인트를 돌려받을까요? 취소한 쿠폰은 다시 사용할 수 없습니다.</p><div class="dialog-actions"><button class="btn danger" type="button" data-action="coupon-cancel-confirm" data-id="${id}">취소하고 환불받기</button><button class="btn outline" type="button" data-action="close">닫기</button></div>`, 'narrow');
+      break;
+    case 'coupon-cancel-confirm': { const row = await act('cancelCoupon', { id, reason: document.getElementById('reject-reason')?.value ?? '' }); refresh(viewer.role === 'admin' ? `주문을 취소하고 회원에게 ${format(row.points)} P를 환불했습니다.` : `쿠폰을 취소했어요. ${format(row.points)} P를 돌려드렸습니다.`); break; }
+    case 'settle':
+      dialog(`${id} 정산 확인`, `<form class="stack" data-form="settle" data-date="${id}"><p class="muted">자사 장부의 이 날짜 교환 차감 합계를 입력하세요. 스마일 포인트 집계: <b>${trigger.dataset.count}건 · ${format(Number(trigger.dataset.amount))} P</b></p>
+        <div class="field-grid"><div><label for="st-count">건수</label><input id="st-count" name="count" type="number" min="0" value="${trigger.dataset.count}" required></div><div><label for="st-amount">차감 포인트 합계</label><input id="st-amount" name="amount" type="number" min="0" value="${trigger.dataset.amount}" required></div></div>
+        <button class="btn primary" type="submit">확인 제출</button></form>`, 'narrow');
+      break;
+    case 'event-toggle': await act('setEventActive', { id, active: !!value }); refresh(value ? '이벤트를 시작했습니다.' : '이벤트를 중지했습니다.'); break;
     case 'test-webhook': await act('testWebhook'); refresh(live() ? '테스트 웹훅을 보냈습니다. 잠시 뒤 전송 결과가 표시됩니다.' : '데모 모드에서는 웹훅이 실제로 전송되지 않습니다. 서버를 실행해 주세요.'); if (live()) setTimeout(poll, 2500); break;
     case 'staff-status': await act('setStaffStatus', { id, status: value }); refresh(value === 'active' ? '계정을 활성화했습니다.' : '계정을 정지했습니다.'); break;
     case 'reset-password':
@@ -358,8 +386,8 @@ document.addEventListener('click', event => {
   if (event.target === modal) modal.close();
   const skip = event.target.closest('.skip');
   if (skip) { event.preventDefault(); const main = document.getElementById('main'); main?.setAttribute('tabindex', '-1'); main?.focus(); return; }
-  if (event.target.closest('#site-menu a')) { document.getElementById('site-menu').classList.remove('open'); document.querySelector('.mobile-toggle')?.setAttribute('aria-expanded', 'false'); }
-  if (event.target.closest('#dash-menu a')) document.getElementById('dash-menu')?.classList.remove('open');
+  // 메뉴 링크를 누르거나 메뉴 바깥을 누르면 닫는다.
+  if (document.body.classList.contains('menu-open') && (event.target.closest('#site-menu a, #dash-menu a') || !event.target.closest('#site-menu, #dash-menu, [data-action="site-menu"], [data-action="dash-menu"]'))) closeMenus();
   onAction(event).catch(error => notify(error.message, 'error'));
 });
 
@@ -367,6 +395,7 @@ document.addEventListener('click', event => {
 let filterTimer;
 document.addEventListener('input', event => {
   const input = event.target;
+  if (input.closest('.dash-content form') && !input.matches('[data-ui], [data-filter]')) dirty = true;
   if (input.id === 'withdraw-amount') document.getElementById('withdraw-net').textContent = format(Math.max(0, Number(input.value) - Number(input.dataset.fee))) + '원';
   if (input.id === 'exchange-amount') document.getElementById('exchange-net').textContent = format(Math.floor(Number(input.value) / Number(input.dataset.divisor))) + ' P';
   if (input.id === 'qty') document.getElementById('qty-total').textContent = format(Math.min(5, Math.max(1, Number(input.value) || 1)) * Number(input.dataset.cost)) + ' P';
@@ -424,7 +453,21 @@ document.addEventListener('submit', async event => {
         afterLogin(account, `가입을 축하해요! ${format(state.settings.signupBonus)} P를 드렸어요. 🎉`);
         break;
       }
-      case 'find': if (modal.open) modal.close(); notify(`${data.email}(으)로 재설정 안내를 보냈습니다. (데모)`); break;
+      case 'find': {
+        const sent = await act('requestReset', { email: data.email });
+        const link = sent?.link ?? (sent?.token ? `${location.origin}${location.pathname}#reset/${sent.token}` : '');
+        if (link) dialog('재설정 링크 (데모)', `<p class="muted">데모 환경이라 메일 대신 링크를 바로 보여 드립니다. 운영 환경에서는 가입한 이메일로 발송됩니다.</p><a class="btn primary block" href="${escape(link.slice(link.indexOf('#')))}" data-action="close">비밀번호 재설정하러 가기</a>`, 'narrow');
+        else { if (modal.open) modal.close(); notify('입력한 이메일이 가입되어 있다면 재설정 안내를 보냈습니다. 메일함을 확인해 주세요.'); }
+        break;
+      }
+      case 'reset':
+        if (data.password !== data.confirm) throw new Error('비밀번호 확인이 일치하지 않습니다.');
+        await act('resetWithToken', { token: form.dataset.token, password: data.password });
+        location.hash = 'login';
+        notify('비밀번호를 바꿨습니다. 새 비밀번호로 로그인해 주세요.');
+        break;
+      case 'settle': { const r = await act('confirmSettlement', { date: form.dataset.date, count: Number(data.count), amount: Number(data.amount) }); refresh(r.status === 'match' ? '스마일 포인트 집계와 일치합니다.' : `집계와 ${format(Math.abs(r.diff))} P 차이가 있어 운영팀에 알렸습니다.`, r.status === 'match' ? '' : 'error'); break; }
+      case 'event-create': await act('createEvent', { ...data, firstOnly: checked('firstOnly') }); refresh('이벤트를 등록했습니다.'); break;
       case 'exchange': await act('exchange', { partnerId: form.dataset.id, amount }); refresh('교환을 신청했습니다. 승인되면 알림으로 알려 드릴게요.'); break;
       case 'link': { const link = await act('linkPartner', { partnerId: form.dataset.id, loginId: data.loginId }); refresh(`연결 완료! 교환 가능 ${format(link.balance)} P를 불러왔어요.`); break; }
       case 'withdrawal': await act('withdraw', { amount }); refresh('출금을 신청했습니다. 승인 후 다음 영업일에 입금됩니다.'); break;
@@ -472,11 +515,31 @@ app.addEventListener('touchend', event => {
   touchStart = undefined;
 }, { passive: true });
 
+// 화면은 즉시 바꾸고, 서버 모드면 최신 데이터를 받아 달라진 경우에만 다시 그린다.
+let navSeq = 0;
 window.addEventListener('hashchange', async () => {
   if (modal.open) modal.close();
-  if (live()) { try { state = withServer((await api('./api/state')).state); } catch {} }
+  closeMenus();
+  dirty = false;
   render();
+  if (!live()) return;
+  const seq = ++navSeq;
+  try {
+    const next = withServer((await api('./api/state')).state);
+    if (seq !== navSeq) return;
+    const changed = JSON.stringify({ ...next, server: 0 }) !== JSON.stringify({ ...state, server: 0 });
+    state = next;
+    if (changed && !busy()) render(true);
+  } catch {}
 });
+document.addEventListener('keydown', event => {
+  if (event.key === 'Escape' && document.body.classList.contains('menu-open')) closeMenus();
+});
+function closeMenus() {
+  document.body.classList.remove('menu-open');
+  for (const menu of document.querySelectorAll('#site-menu.open, #dash-menu.open')) menu.classList.remove('open');
+  for (const toggle of document.querySelectorAll('[data-action="site-menu"], [data-action="dash-menu"]')) toggle.setAttribute('aria-expanded', 'false');
+}
 window.addEventListener('storage', event => {
   if (!live() && (event.key === S.storageKey || event.key === null)) { state = withServer(S.load()); if (modal.open) modal.close(); render(true); }
 });

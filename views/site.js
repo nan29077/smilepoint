@@ -1,5 +1,6 @@
-import { config, escape, faq, format, icon, socialMark, testAccounts, testPassword } from '../catalog.js';
+import { config, escape, faqFor, format, grades, icon, socialMark, testAccounts, testPassword } from '../catalog.js';
 import { current, publicStats } from '../state.js';
+import { legalBody, legalDocs } from './legal.js';
 import { announcementList, avatar, brand, button, faqList, heading, productCards } from './ui.js';
 
 export const slides = [
@@ -9,7 +10,7 @@ export const slides = [
 ];
 
 const stories = {
-  exchange: { image: 'story-exchange', label: '포인트 교환 체험', title: '교환 신청 전에 받을 포인트를 확인하세요.', copy: '체험용 웹하드 계정을 연결하면 교환 가능 잔액과 적용 비율, 받을 스마일 포인트를 확인할 수 있어요.', button: '포인트 교환 체험하기', href: '#app/user/exchange' },
+  exchange: { image: 'story-exchange', label: '포인트 교환', title: '교환 신청 전에 받을 포인트를 확인하세요.', copy: '웹하드 계정을 연결하면 교환 가능 잔액과 적용 비율, 받을 스마일 포인트를 확인할 수 있어요.', button: '내 교환 금액 확인하기', href: '#app/user/exchange' },
   withdrawal: { image: 'story-withdraw', label: '계좌 출금', title: '수수료를 빼면 얼마를 받을까요?', copy: '출금할 포인트를 입력하면 예상 실수령액이 바로 표시됩니다. 회원 등급이 오르면 수수료가 할인되고, VIP는 무료예요.', button: '출금하러 가기', href: '#app/user/withdrawal' },
   shop: { image: 'story-shop', label: '모바일 쿠폰', title: '오늘 고른 쿠폰은 내 쿠폰함에.', copy: '상품을 고르고 포인트로 결제하면 바코드가 담긴 쿠폰이 쿠폰함에 바로 발급됩니다.', button: '쿠폰 둘러보기', href: '#app/user/shop' },
 };
@@ -47,12 +48,13 @@ export function header(state) {
   </div></header>`;
 }
 
-export function footer() {
+export function footer(state) {
+  const demo = state?.server?.demo !== false;
   return `<footer class="site-footer"><div class="container footer-top">${brand()}
     <nav aria-label="하단 메뉴"><a href="#partners">웹하드 업체</a><a href="#withdraw">계좌 출금</a><a href="#shop">포인트 쇼핑</a><a href="#guide">이용 안내</a><a href="#support">고객센터</a><a href="#login">로그인</a><a href="#signup">회원가입</a></nav>
     </div><div class="container footer-info"><p>${config.name}(가칭) · 고객센터 ${config.support} (${config.hours}) · 제휴 문의 partner@smilepoint.kr</p>
-    <p>이 사이트는 개발 중인 데모입니다. 포인트 교환·상품·거래는 샘플 데이터로 체험할 수 있습니다.</p></div>
-    <div class="container footer-bottom"><span><button type="button" class="link-btn" data-action="policy" data-value="terms">이용약관</button> · <button type="button" class="link-btn" data-action="policy" data-value="privacy"><b>개인정보처리방침</b></button></span><span>© 2026 ${config.english}</span></div></footer>`;
+    ${demo ? '<p>개발 중인 데모 서비스입니다. 제휴사·상품·거래 데이터는 샘플이며 실제 포인트 교환과 지급은 일어나지 않습니다.</p>' : '<p>사업자 정보는 정식 오픈 시 게시됩니다.</p>'}</div>
+    <div class="container footer-bottom"><span><a href="#terms">이용약관</a> · <a href="#privacy"><b>개인정보처리방침</b></a></span><span>© 2026 ${config.english}</span></div></footer>`;
 }
 
 export function hero(index) {
@@ -109,7 +111,7 @@ export function landing(state, index) {
   const example = `<div class="story-example"><span>그린파일 12,000 P</span><strong>스마일 6,000 P 적립</strong></div>`;
   const terms = [['최소 신청 금액', format(state.settings.withdrawalMinimum) + ' P'], ['건당 수수료', format(fee) + ' P (등급별 할인)'], ['예상 입금일', '승인 후 다음 영업일']];
   const steps = [
-    ['user', '회원가입', '카카오·네이버 또는 이메일로 30초 만에 가입하고 1,000 P를 받으세요.'],
+    ['user', '회원가입', `카카오·네이버 또는 이메일로 30초 만에 가입하고 ${format(state.settings.signupBonus)} P를 받으세요.`],
     ['link', '웹하드 연결', '포인트가 있는 웹하드 계정을 연결하면 교환 가능 잔액이 표시돼요.'],
     ['exchange', '교환 신청', '받을 포인트를 확인하고 신청하세요. 승인되면 알림을 보내 드려요.'],
     ['gift', '출금 또는 쇼핑', '계좌로 출금하거나 모바일 쿠폰을 사고, 친구에게 선물할 수도 있어요.'],
@@ -120,14 +122,14 @@ export function landing(state, index) {
       <span class="feature-icon tone-${i}">${icon(glyph, 25)}</span><span><strong>${label}</strong><small>${copy}</small></span>${icon('chevron', 18)}</a>`).join('')}</div></div>
     ${stats(state)}
     <section class="section container" id="partners">
-      <div class="section-head">${heading('업체 안내', '웹하드 업체', '카드를 누르면 해당 업체의 공식 사이트가 열립니다.')}${button('포인트 교환 체험', '#app/user/exchange', 'btn outline')}</div>
+      <div class="section-head">${heading('업체 안내', '웹하드 업체', '카드를 누르면 해당 업체의 공식 사이트가 열립니다.')}${button('포인트 교환하기', '#app/user/exchange', 'btn outline')}</div>
       ${webhardCards()}
       <div class="section-story">${storyBanner('exchange', example)}</div>
     </section>
     <section class="section cash-section" id="withdraw" aria-label="계좌 출금"><div class="container">
       ${storyBanner('withdrawal', `<div class="story-example"><span>10,000 P 출금 예시</span><strong>${format(10000 - fee)}원 실수령</strong></div>`)}
       <dl class="cash-terms">${terms.map(([label, value]) => `<div><dt>${label}</dt><dd>${value}</dd></div>`).join('')}</dl>
-      <div class="grade-strip">${[['브론즈', '500 P'], ['실버', '400 P'], ['골드', '300 P'], ['VIP', '무료']].map(([name, value], i) => `<div class="g${i}"><span>${icon('trophy', 18)} ${name}</span><strong>출금 수수료 ${value}</strong></div>`).join('')}</div>
+      <div class="grade-strip">${grades.map(g => [g.name, g.feeRate ? format(Math.round(fee * g.feeRate)) + ' P' : '무료']).map(([name, value], i) => `<div class="g${i}"><span>${icon('trophy', 18)} ${name}</span><strong>출금 수수료 ${value}</strong></div>`).join('')}</div>
     </div></section>
     <section class="shopping section" id="shop"><div class="container">
       <div class="section-head">${heading('포인트 쇼핑', '오늘은 어떤 선물을 고를까요?', '커피 한 잔부터 외식, 영화 관람권과 상품권까지 포인트로 바로 구매하세요.')}${button('쇼핑하러 가기', '#app/user/shop', 'btn outline')}</div>
@@ -145,9 +147,9 @@ export function landing(state, index) {
       <div class="cta-actions">${button('회원가입', '#signup', 'btn lime', 'arrow')}<a class="btn ghost" href="#login">로그인</a></div></div></section>
     <section class="help-section section" id="support"><div class="container">
       <div class="section-head">${heading('고객센터', '무엇을 도와드릴까요?', `자주 묻는 질문을 먼저 확인해 보세요. 고객센터 ${config.support} · ${config.hours}`)}${button('1:1 문의하기', '#app/user/support', 'btn outline')}</div>
-      <div class="help-grid"><div class="panel"><h3>자주 묻는 질문</h3>${faqList(faq)}</div><div class="panel"><h3>공지사항</h3>${announcementList(state.announcements)}</div></div>
+      <div class="help-grid"><div class="panel"><h3>자주 묻는 질문</h3>${faqList(faqFor(state.settings))}</div><div class="panel"><h3>공지사항</h3>${announcementList(state.announcements)}</div></div>
     </div></section>
-  </main>${footer()}`;
+  </main>${footer(state)}`;
 }
 
 // ───────── 로그인 · 회원가입 ─────────
@@ -205,8 +207,8 @@ export function signup(state) {
         <label for="su-ref">추천인 코드 <small class="muted">(선택)</small></label><input id="su-ref" name="referral" placeholder="예: SMILE3070" maxlength="12">
         <fieldset class="terms"><legend class="sr-only">약관 동의</legend>
           <label class="check all"><input type="checkbox" data-check-all> <strong>전체 동의</strong></label>
-          <label class="check"><input type="checkbox" name="terms" data-term> [필수] 서비스 이용약관 동의</label>
-          <label class="check"><input type="checkbox" name="privacy" data-term> [필수] 개인정보 수집·이용 동의</label>
+          <div class="term-row"><label class="check"><input type="checkbox" name="terms" data-term> [필수] 서비스 이용약관 동의</label><button type="button" class="text-btn" data-action="policy" data-value="terms">보기</button></div>
+          <div class="term-row"><label class="check"><input type="checkbox" name="privacy" data-term> [필수] 개인정보 수집·이용 동의</label><button type="button" class="text-btn" data-action="policy" data-value="privacy">보기</button></div>
           <label class="check"><input type="checkbox" name="age" data-term> [필수] 만 14세 이상입니다</label>
           <label class="check"><input type="checkbox" name="marketing" data-term> [선택] 이벤트·혜택 알림 수신 동의</label>
         </fieldset>
@@ -215,4 +217,22 @@ export function signup(state) {
       <p class="auth-switch">이미 회원이신가요? <a href="#login">로그인</a></p>
     </div>
   </div></main>`;
+}
+
+export function legalPage(state, kind) {
+  const doc = legalDocs[kind];
+  return `${header(state)}<main id="main" class="legal-page"><div class="container legal-wrap">
+    <nav class="tabs" aria-label="약관 종류"><a class="tab ${kind === 'terms' ? 'active' : ''}" href="#terms">이용약관</a><a class="tab ${kind === 'privacy' ? 'active' : ''}" href="#privacy">개인정보처리방침</a></nav>
+    <article class="panel legal-doc"><h1>${doc.title}</h1>${legalBody(kind)}</article>
+  </div></main>${footer(state)}`;
+}
+
+export function resetPage(state, token) {
+  return `${header(state)}<main id="main" class="auth-page"><div class="auth-card solo"><span class="eyebrow">비밀번호 재설정</span><h1>새 비밀번호 만들기</h1>
+    <p class="muted">영문과 숫자를 포함해 8자 이상으로 입력해 주세요. 재설정하면 다른 기기의 로그인은 모두 해제됩니다.</p>
+    <form class="stack auth-form" data-form="reset" data-token="${escape(token)}">
+      <label for="rs-pw">새 비밀번호</label><input id="rs-pw" name="password" type="password" autocomplete="new-password" required minlength="8">
+      <label for="rs-confirm">새 비밀번호 확인</label><input id="rs-confirm" name="confirm" type="password" autocomplete="new-password" required minlength="8">
+      <button class="btn primary block" type="submit">비밀번호 재설정</button></form>
+    <p class="auth-switch"><a href="#login">로그인으로 돌아가기</a></p></div></main>`;
 }

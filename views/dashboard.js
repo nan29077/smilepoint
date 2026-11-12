@@ -42,6 +42,7 @@ export function dashboard(state, me, page, ui) {
         <button type="button" class="icon-btn" data-action="logout" aria-label="로그아웃" title="로그아웃">${icon('logout', 20)}</button>
       </div>
     </header><main id="main" class="dash-content">
+      ${state.settings?.maintenance ? `<div class="notice-bar warn">${icon('alert', 18)}<span><b>서비스 점검 중</b> ${role === 'user' ? '교환·출금·구매·선물·출석은 점검이 끝난 뒤 이용할 수 있습니다.' : role === 'admin' ? '사용자의 거래 기능이 막혀 있습니다. 운영 설정에서 점검 모드를 끌 수 있습니다.' : '사용자의 신규 교환 신청이 일시 중지되었습니다.'}</span></div>` : ''}
       ${page === 'overview' ? '' : `<div class="dash-title"><h1>${pageTitle(role, page)}</h1><p>${descriptions[role][page] ?? ''}</p></div>`}
       ${body}
     </main></div>

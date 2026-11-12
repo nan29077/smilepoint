@@ -147,13 +147,15 @@ export function productForm(p) {
 
 function orders(state, me) {
   const rows = state.transactions.filter(r => r.type === 'coupon');
-  const used = rows.filter(r => r.coupon?.used).length;
+  const sold = rows.filter(r => r.status === 'complete');
+  const used = sold.filter(r => r.coupon?.used).length;
   const byCat = {};
-  for (const r of rows) { const c = state.products.find(p => p.id === r.product)?.category ?? '기타'; byCat[c] = (byCat[c] ?? 0) + r.points; }
+  for (const r of sold) { const c = state.products.find(p => p.id === r.product)?.category ?? '기타'; byCat[c] = (byCat[c] ?? 0) + r.points; }
   const palette = ['#18563e', '#f0a43a', '#4f6fbf', '#d65a5a', '#8b62c9', '#3aa5a0'];
-  return `<div class="summary-strip"><div><span>주문 건수</span><strong>${rows.length}건</strong></div><div><span>판매 포인트</span><strong>${format(rows.reduce((s, r) => s + r.points, 0))} P</strong></div><div><span>사용 완료</span><strong>${used}건</strong></div><div><span>미사용</span><strong>${rows.length - used}건</strong></div></div>
+  return `<div class="summary-strip"><div><span>판매</span><strong>${sold.length}건</strong></div><div><span>판매 포인트</span><strong>${format(sold.reduce((s, r) => s + r.points, 0))} P</strong></div><div><span>사용 완료</span><strong>${used}건</strong></div><div><span>미사용</span><strong>${sold.length - used}건</strong></div><div><span>취소·환불</span><strong>${rows.length - sold.length}건</strong></div></div>
     <div class="dash-grid two-one"><section class="panel" data-csv><div class="panel-head"><h2>쿠폰 주문</h2>${action('CSV', 'csv', 'data-name="쿠폰주문"', 'btn outline sm', 'download')}</div>${table(state, rows, me, { showUser: true })}</section>
-    ${panel('분류별 판매', donut(Object.entries(byCat).map(([label, value], i) => ({ label, value, color: palette[i % palette.length] })), `<strong>${rows.length}</strong><small>주문</small>`))}</div>`;
+    ${panel('분류별 판매', donut(Object.entries(byCat).map(([label, value], i) => ({ label, value, color: palette[i % palette.length] })), `<strong>${sold.length}</strong><small>판매</small>`))}</div>
+    <p class="muted small">미사용 쿠폰은 주문의 <b>상세</b>에서 사유를 입력해 취소·환불할 수 있습니다.</p>`;
 }
 
 function content(state) {
@@ -161,6 +163,11 @@ function content(state) {
     <div class="dash-grid two-one"><section class="panel"><h2>공지 등록</h2><form class="stack" data-form="announce"><label for="an-title">제목</label><input id="an-title" name="title" maxlength="60" required>
       <label for="an-body">내용</label><textarea id="an-body" name="body" rows="4" maxlength="500" required></textarea><label class="check"><input type="checkbox" name="pinned"> 상단 고정</label><button class="btn primary sm" type="submit">등록</button></form></section>
     <section class="panel"><h2>공지 목록</h2><ul class="announce-admin">${state.announcements.map(n => `<li class="${n.visible ? '' : 'hidden-item'}"><div><strong>${n.pinned ? '<b class="pin">고정</b>' : ''}${escape(n.title)}</strong><small>${n.date} · ${n.visible ? '노출' : '숨김'}</small></div>${action(n.visible ? '숨기기' : '노출', 'announce-toggle', `data-id="${n.id}"`, 'text-btn')}</li>`).join('')}</ul></section></div>
+    <div class="dash-grid two-one"><section class="panel"><h2>교환 이벤트</h2>${(state.events ?? []).length ? `<ul class="announce-admin">${state.events.map(e => `<li class="${e.active ? '' : 'hidden-item'}"><div><strong>${escape(e.title)}</strong><small>${escape(state.partners.find(p => p.id === e.partner)?.name ?? '삭제된 제휴사')} · ${e.rate}% · ${e.firstOnly ? '첫 교환만' : '모든 교환'} · ~${e.until} · ${e.active ? (e.until < kstDay() ? '기간 종료' : '진행 중') : '중지'}</small></div>${action(e.active ? '중지' : '시작', 'event-toggle', `data-id="${e.id}" data-value="${e.active ? '' : '1'}"`, 'text-btn')}</li>`).join('')}</ul>` : blank('등록된 이벤트가 없습니다.', 'megaphone')}
+      <p class="muted small">진행 중인 이벤트는 사용자 교환 화면에 안내되고, 교환이 승인되면 추가 포인트가 자동 적립됩니다.</p></section>
+    <section class="panel"><h2>이벤트 등록</h2><form class="stack" data-form="event-create"><label for="ev-partner">제휴사</label><select id="ev-partner" name="partner">${state.partners.map(p => `<option value="${p.id}">${escape(p.name)}</option>`).join('')}</select>
+      <div class="field-grid"><div><label for="ev-rate">추가 적립률(%)</label><input id="ev-rate" name="rate" type="number" min="1" max="50" value="5" required></div><div><label for="ev-until">종료일</label><input id="ev-until" name="until" type="date" required></div></div>
+      <label for="ev-title">이벤트 이름 <small class="muted">(선택)</small></label><input id="ev-title" name="title" maxlength="40"><label class="check"><input type="checkbox" name="firstOnly" checked> 제휴사별 첫 교환만 적용</label><button class="btn primary sm" type="submit" ${state.partners.length ? '' : 'disabled'}>등록</button></form></section></div>
     ${panel('사용자에게 보이는 공지', announcementList(state.announcements))}`;
 }
 
@@ -241,7 +248,7 @@ export function adminPage(state, me, page, ui, { profilePage, supportPage }) {
     case 'transactions': return `${activityFilters(ui, ['exchange', 'withdrawal', 'coupon', 'attendance', 'reward', 'adjust', 'gift_out', 'gift_in'])}<section class="panel" data-csv>${table(state, applyFilters(state, rows, ui), me, { showUser: true, showUpdate: true })}</section>`;
     case 'products': return products(state);
     case 'orders': return orders(state, me);
-    case 'settlement': return `<div class="tabs">${[7, 14, 30].map(d => `<button type="button" class="tab ${(Number(ui.days) || 14) === d ? 'active' : ''}" data-action="ui" data-key="days" data-value="${d}">최근 ${d}일</button>`).join('')}</div>${settlementTable(state, rows, state.partners, Number(ui.days) || 14)}`;
+    case 'settlement': return `<div class="tabs">${[7, 14, 30].map(d => `<button type="button" class="tab ${(Number(ui.days) || 14) === d ? 'active' : ''}" data-action="ui" data-key="days" data-value="${d}">최근 ${d}일</button>`).join('')}</div>${settlementTable(state, state.partners, Number(ui.days) || 14)}`;
     case 'support': return supportPage(state, me, true, ui);
     case 'content': return content(state);
     case 'settings': return settings(state);
