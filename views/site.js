@@ -31,14 +31,14 @@ const webhardDirectory = [
   { name: '스마트파일', domain: 'smartfile.co.kr', logo: 'webhard-smartfile.png' },
 ];
 
-export function header(state) {
+export function header(state, { stickyOnMobile = false } = {}) {
   const me = current(state);
   const actions = me
     ? `<a class="header-user" href="#app/${me.role}/overview">${avatar(me)}<span>${escape(me.name)}</span></a>
        ${button('내 대시보드', '#app/' + me.role + '/overview', 'btn primary header-cta', '')}
        <button type="button" class="icon-btn" data-action="logout" aria-label="로그아웃" title="로그아웃">${icon('logout', 20)}</button>`
     : `<a href="#login" class="btn outline header-login">로그인</a>${button('회원가입', '#signup', 'btn primary header-cta', '')}`;
-  return `<header class="site-header"><div class="container header-inner">
+  return `<header class="site-header${stickyOnMobile ? ' site-header--landing' : ''}"><div class="container header-inner">
     ${brand()}
     <nav class="site-nav" id="site-menu" aria-label="주 메뉴">
       <a href="#partners">포인트 교환</a><a href="#withdraw">계좌 출금</a><a href="#shop">포인트 쇼핑</a><a href="#guide">이용 안내</a><a href="#support">고객센터</a>
@@ -116,7 +116,7 @@ export function landing(state, index) {
     ['exchange', '교환 신청', '받을 포인트를 확인하고 신청하세요. 승인되면 알림을 보내 드려요.'],
     ['gift', '출금 또는 쇼핑', '계좌로 출금하거나 모바일 쿠폰을 사고, 친구에게 선물할 수도 있어요.'],
   ];
-  return `${state.settings.maintenance ? `<div class="maintenance">${icon('alert', 17)} 서비스 점검 중입니다. 일부 기능 이용이 제한될 수 있습니다.</div>` : ''}${header(state)}<main id="main">
+  return `${state.settings.maintenance ? `<div class="maintenance">${icon('alert', 17)} 서비스 점검 중입니다. 일부 기능 이용이 제한될 수 있습니다.</div>` : ''}${header(state, { stickyOnMobile: true })}<main id="main">
     <section id="hero" aria-label="스마일 포인트 소개">${hero(index)}</section>
     <div class="quick-wrap"><div class="container quick-grid four">${quick.map(([page, glyph, label, copy], i) => `<a class="quick-card" href="#app/user/${page}">
       <span class="feature-icon tone-${i}">${icon(glyph, 25)}</span><span><strong>${label}</strong><small>${copy}</small></span>${icon('chevron', 18)}</a>`).join('')}</div></div>
