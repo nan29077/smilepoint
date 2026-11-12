@@ -9,7 +9,7 @@ export const slides = [
 ];
 
 const stories = {
-  exchange: { image: 'story-exchange', label: '포인트 교환', title: '교환 신청 전에 받을 포인트를 확인하세요.', copy: '제휴사마다 교환 비율이 다릅니다. 웹하드 계정을 한 번 연결해 두면 교환 가능 잔액과 받을 포인트를 바로 확인할 수 있어요.', button: '내 교환 금액 확인하기', href: '#app/user/exchange' },
+  exchange: { image: 'story-exchange', label: '포인트 교환 체험', title: '교환 신청 전에 받을 포인트를 확인하세요.', copy: '체험용 웹하드 계정을 연결하면 교환 가능 잔액과 적용 비율, 받을 스마일 포인트를 확인할 수 있어요.', button: '포인트 교환 체험하기', href: '#app/user/exchange' },
   withdrawal: { image: 'story-withdraw', label: '계좌 출금', title: '수수료를 빼면 얼마를 받을까요?', copy: '출금할 포인트를 입력하면 예상 실수령액이 바로 표시됩니다. 회원 등급이 오르면 수수료가 할인되고, VIP는 무료예요.', button: '출금하러 가기', href: '#app/user/withdrawal' },
   shop: { image: 'story-shop', label: '모바일 쿠폰', title: '오늘 고른 쿠폰은 내 쿠폰함에.', copy: '상품을 고르고 포인트로 결제하면 바코드가 담긴 쿠폰이 쿠폰함에 바로 발급됩니다.', button: '쿠폰 둘러보기', href: '#app/user/shop' },
 };
@@ -19,6 +19,15 @@ const quick = [
   ['withdrawal', 'bank', '계좌 출금', '실수령액과 입금 일정 확인'],
   ['shop', 'gift', '포인트 쇼핑', '모바일 쿠폰을 포인트로'],
   ['attendance', 'calendar', '출석체크', '매일 출석하고 포인트 받기'],
+];
+
+const webhardDirectory = [
+  { name: '온디스크', domain: 'ondisk.co.kr', logo: 'webhard-ondisk.png' },
+  { name: '케이디스크', domain: 'kdisk.co.kr', logo: 'webhard-kdisk.png' },
+  { name: '파일조', domain: 'filejo.com', logo: 'webhard-filejo.png' },
+  { name: '파일마루', domain: 'filemaru.com', logo: 'webhard-filemaru.png' },
+  { name: '미투디스크', domain: 'me2disk.com', logo: 'webhard-me2disk.svg' },
+  { name: '스마트파일', domain: 'smartfile.co.kr', logo: 'webhard-smartfile.png' },
 ];
 
 export function header(state) {
@@ -40,9 +49,9 @@ export function header(state) {
 
 export function footer() {
   return `<footer class="site-footer"><div class="container footer-top">${brand()}
-    <nav aria-label="하단 메뉴"><a href="#partners">제휴사</a><a href="#withdraw">계좌 출금</a><a href="#shop">포인트 쇼핑</a><a href="#guide">이용 안내</a><a href="#support">고객센터</a><a href="#login">로그인</a><a href="#signup">회원가입</a></nav>
+    <nav aria-label="하단 메뉴"><a href="#partners">웹하드 업체</a><a href="#withdraw">계좌 출금</a><a href="#shop">포인트 쇼핑</a><a href="#guide">이용 안내</a><a href="#support">고객센터</a><a href="#login">로그인</a><a href="#signup">회원가입</a></nav>
     </div><div class="container footer-info"><p>${config.name}(가칭) · 고객센터 ${config.support} (${config.hours}) · 제휴 문의 partner@smilepoint.kr</p>
-    <p>이 사이트는 개발 중인 데모입니다. 제휴사·상품·거래 정보는 샘플이며 실제 포인트 교환과 지급은 일어나지 않습니다.</p></div>
+    <p>이 사이트는 개발 중인 데모입니다. 포인트 교환·상품·거래는 샘플 데이터로 체험할 수 있습니다.</p></div>
     <div class="container footer-bottom"><span><button type="button" class="link-btn" data-action="policy" data-value="terms">이용약관</button> · <button type="button" class="link-btn" data-action="policy" data-value="privacy"><b>개인정보처리방침</b></button></span><span>© 2026 ${config.english}</span></div></footer>`;
 }
 
@@ -72,12 +81,14 @@ function storyBanner(key, detail) {
   </article>`;
 }
 
-function publicPartners(state) {
-  return `<div class="card-grid partner-grid four">${state.partners.filter(item => item.active).map(item => `<article class="partner-card">
-    <div class="partner-top"><span class="partner-logo ${item.color}">${item.initials}</span><span class="pill">${item.type}</span></div>
-    <h3>${item.name}</h3><p class="partner-rate"><strong>${item.divisor} P</strong>${icon('arrow', 16)}<strong>1 스마일 P</strong></p>
-    <div class="partner-foot"><span>최소 ${format(item.min)} P · ${item.approval}</span>${button('교환', '#app/user/exchange', 'text-btn', 'chevron')}</div>
-  </article>`).join('')}</div>`;
+function webhardCards() {
+  return `<ul class="webhard-list">${webhardDirectory.map(({ name, domain, logo }) => `<li>
+    <a class="webhard-card" href="https://www.${domain}/" target="_blank" rel="noopener noreferrer" aria-label="${name} 공식 사이트 (새 창)">
+      <span class="webhard-thumbnail"><img src="./assets/${logo}" alt="" width="104" height="48" loading="lazy" decoding="async"></span>
+      <span class="webhard-name"><strong>${name}</strong><small>${domain}</small></span>
+      <span class="webhard-link-icon">${icon('external', 16)}</span>
+    </a>
+  </li>`).join('')}</ul>`;
 }
 
 function stats(state) {
@@ -87,7 +98,7 @@ function stats(state) {
   const items = [
     ['exchange', format(exchanged) + ' P', '누적 교환 포인트'],
     ['users', format(members) + '명', '함께하는 회원'],
-    ['layers', state.partners.filter(item => item.active).length + '곳', '제휴 웹하드'],
+    ['layers', webhardDirectory.length + '곳', '웹하드 업체 안내'],
     ['gift', state.products.filter(item => item.active).length + '종', '모바일 쿠폰 상품'],
   ];
   return `<div class="stats-band"><div class="container stats-grid">${items.map(([glyph, value, label]) => `<div>${icon(glyph, 24)}<strong>${value}</strong><span>${label}</span></div>`).join('')}</div></div>`;
@@ -109,8 +120,8 @@ export function landing(state, index) {
       <span class="feature-icon tone-${i}">${icon(glyph, 25)}</span><span><strong>${label}</strong><small>${copy}</small></span>${icon('chevron', 18)}</a>`).join('')}</div></div>
     ${stats(state)}
     <section class="section container" id="partners">
-      <div class="section-head">${heading('제휴 포인트', '포인트를 가져올 수 있는 곳', '웹하드별 교환 비율, 최소 신청 금액과 평균 승인 시간을 확인하세요.')}${button('포인트 교환하기', '#app/user/exchange', 'btn outline')}</div>
-      ${publicPartners(state)}
+      <div class="section-head">${heading('업체 안내', '웹하드 업체', '카드를 누르면 해당 업체의 공식 사이트가 열립니다.')}${button('포인트 교환 체험', '#app/user/exchange', 'btn outline')}</div>
+      ${webhardCards()}
       <div class="section-story">${storyBanner('exchange', example)}</div>
     </section>
     <section class="section cash-section" id="withdraw" aria-label="계좌 출금"><div class="container">
