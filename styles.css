@@ -884,3 +884,22 @@ body.menu-open .site-header { z-index: 9; }
 a.tab { display: inline-flex; }
 /* 표 안의 화면낭독 전용 글자(position:absolute)가 스크롤 영역 밖으로 빠져 페이지를 넓히지 않도록 */
 .table-scroll { position: relative; }
+
+/* ───────── 보안·인증 기능 추가 화면 ───────── */
+.barcode-btn.locked { place-items: center; min-height: 92px; color: var(--green-dark, #18563e); font-weight: 800; text-align: center; cursor: pointer; }
+.barcode-btn.locked small { font-weight: 500; color: var(--muted); font-size: 11px; }
+.otp-field[hidden] { display: none; }
+.more-row { display: flex; justify-content: center; padding: 12px 0 2px; }
+.danger-zone > summary { cursor: pointer; font-weight: 800; color: #b23b3b; list-style: none; }
+.danger-zone > summary::-webkit-details-marker { display: none; }
+.danger-zone[open] > summary { margin-bottom: 10px; }
+details.danger-zone:not(.panel) { margin-top: 14px; padding: 12px 14px; border: 1px solid #f0d4d4; border-radius: 12px; background: #fffafa; }
+.notice-bar .btn { margin-left: auto; flex-shrink: 0; }
+[aria-busy="true"] { opacity: .65; pointer-events: none; }
+@media (max-width: 760px) {
+  /* 좁은 화면에서는 제휴사 카드 정보를 한 줄에 하나씩 (라벨 왼쪽 · 값 오른쪽) */
+  .mini-dl, .partner-card.admin .mini-dl { grid-template-columns: 1fr; gap: 4px; padding: 8px 10px; }
+  .mini-dl > div { display: flex; justify-content: space-between; align-items: baseline; gap: 6px; }
+  .mini-dl dd { margin: 0; text-align: right; white-space: nowrap; }
+  .notice-bar { flex-wrap: wrap; }
+}

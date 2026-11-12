@@ -62,7 +62,7 @@ export function donut(parts, center = '') {
     return svg;
   }).join('');
   return `<div class="donut-wrap"><div class="donut"><svg viewBox="0 0 36 36" aria-hidden="true"><circle r="15.9" cx="18" cy="18" fill="none" stroke="#edf2ed" stroke-width="4.2"/>${circles}</svg><div>${center}</div></div>
-    <ul class="legend">${parts.map(part => `<li><i style="background:${part.color}"></i><span>${part.label}</span><strong>${format(part.value)}</strong></li>`).join('')}</ul></div>`;
+    <ul class="legend">${parts.map(part => `<li><i style="background:${part.color}"></i><span>${escape(part.label)}</span><strong>${format(part.value)}</strong></li>`).join('')}</ul></div>`;
 }
 export function progress(value, label = '') {
   return `<div class="progress" role="progressbar" aria-valuenow="${value}" aria-valuemin="0" aria-valuemax="100" ${label ? `aria-label="${label}"` : ''}><i style="width:${value}%"></i></div>`;
@@ -87,7 +87,7 @@ export function productVisual(item) {
 export function productCard(item) {
   const soldOut = !item.active || item.stock < 1;
   return `<button class="product-card ${soldOut ? 'sold-out' : ''}" type="button" data-action="product" data-id="${item.id}">
-    <div class="product-image">${productVisual(item)}<span>${item.category}</span>${item.best ? '<b class="best">BEST</b>' : ''}${soldOut ? '<em>품절</em>' : ''}</div>
+    <div class="product-image">${productVisual(item)}<span>${escape(item.category)}</span>${item.best ? '<b class="best">BEST</b>' : ''}${soldOut ? '<em>품절</em>' : ''}</div>
     <div class="product-detail"><p>${escape(item.brand)}</p><h3>${escape(item.name)}</h3><div><strong>${money(item.cost)}</strong><span class="product-arrow">${icon('arrow', 18)}</span></div></div>
   </button>`;
 }
@@ -105,38 +105,55 @@ export function filteredProducts(state, category, query = '') {
 
 // ───────── 거래 표 ─────────
 export function transactionLabel(state, row) {
-  if (row.type === 'exchange') return partnerName(state, row.partner) + ' · ' + format(row.source) + ' P';
-  if (row.type === 'coupon') return productName(state, row.product);
-  if (row.type === 'withdrawal') return (row.bank ?? '등록 계좌') + ' · 실수령 ' + format(row.points - (row.fee ?? 0)) + '원';
+  if (row.type === 'exchange') return escape(partnerName(state, row.partner)) + ' · ' + format(row.source) + ' P';
+  if (row.type === 'reversal') return escape(partnerName(state, row.partner)) + ' 교환 회수 · ' + escape(row.memo ?? '');
+  if (row.type === 'coupon') return escape(productName(state, row.product));
+  if (row.type === 'withdrawal') return escape(row.bank ?? '등록 계좌') + ' · 실수령 ' + format(row.points - (row.fee ?? 0)) + '원';
   if (row.type === 'gift_out' || row.type === 'gift_in') return (row.type === 'gift_out' ? '받는 분 ' : '보낸 분 ') + escape(row.counterpartName ?? '');
   return escape(row.memo ?? '');
 }
 const signed = row => (['exchange', 'attendance', 'reward', 'gift_in'].includes(row.type) || (row.type === 'adjust' && row.points > 0) ? '+' : '−') + format(Math.abs(row.points)) + ' P';
 
-export function table(state, rows, viewer, { actions = true, showUpdate = false, showUser = false, select = false, empty = '해당 조건의 거래가 없습니다.' } = {}) {
+// 거래 상태 배지: 2차 승인 대기·회수 여부까지 표시한다.
+export function statusPill(row, viewer) {
+  if (row.status === 'pending' && row.partnerApproved) return pill(viewer?.role === 'user' ? '승인 진행 중' : '2차 승인 대기', 'pending');
+  if (row.reversed) return pill('회수됨', 'rejected');
+  return pill(statuses[row.status] ?? row.status, row.status);
+}
+// 긴 목록은 처음 limit건만 그리고 '더 보기'로 늘린다 (ui.more).
+export const pageSize = ui => ui?.more === 'all' ? Infinity : Math.max(50, Number(ui?.more) || 50);
+let currentLimit = 50;
+export const setPaging = ui => { currentLimit = pageSize(ui); };
+export const moreButton = (total, shown) => total > shown ? `<div class="more-row"><button type="button" class="btn outline sm" data-more data-action="ui" data-key="more" data-value="${shown + 100}">더 보기 (${format(total - shown)}건 남음)</button></div>` : '';
+
+export function table(state, rows, viewer, { actions = true, showUpdate = false, showUser = false, select = false, empty = '해당 조건의 거래가 없습니다.', limit = currentLimit } = {}) {
   if (!rows.length) return blank(empty);
-  const named = rows.map(row => row.counterpart ? { ...row, counterpartName: account(state, row.counterpart)?.name } : row);
+  const total = rows.length;
+  const named = rows.slice(0, limit).map(row => row.counterpart ? { ...row, counterpartName: account(state, row.counterpart)?.name } : row);
   return `<div class="table-scroll"><table><thead><tr>${select ? '<th scope="col"><input type="checkbox" data-select-all aria-label="전체 선택"></th>' : ''}<th scope="col">거래</th>${showUser ? '<th scope="col">회원</th>' : ''}<th scope="col">신청일</th><th scope="col" class="numeric">포인트</th><th scope="col">상태</th>${showUpdate ? '<th scope="col">최종 변경</th>' : ''}${actions ? '<th scope="col"><span class="sr-only">상세 및 처리</span></th>' : ''}</tr></thead>
-    <tbody>${named.map(row => `<tr>${select ? `<td>${row.status === 'pending' ? `<input type="checkbox" data-select value="${row.id}" aria-label="${row.id} 선택">` : ''}</td>` : ''}
-      <td><strong>${types[row.type]} · ${transactionLabel(state, row)}</strong><small>${row.id}</small></td>
+    <tbody>${named.map(row => `<tr>${select ? `<td>${row.status === 'pending' && !(viewer.role === 'partner' && row.partnerApproved) ? `<input type="checkbox" data-select value="${escape(row.id)}" aria-label="${escape(row.id)} 선택">` : ''}</td>` : ''}
+      <td><strong>${types[row.type]} · ${transactionLabel(state, row)}</strong><small>${escape(row.id)}</small></td>
       ${showUser ? `<td>${escape(account(state, row.userId)?.name ?? '—')}</td>` : ''}<td>${showTime(row.date)}</td>
-      <td class="numeric ${signed(row)[0] === '+' ? 'plus' : 'minus'}">${signed(row)}</td><td>${pill(statuses[row.status], row.status)}</td>
+      <td class="numeric ${signed(row)[0] === '+' ? 'plus' : 'minus'}">${signed(row)}</td><td>${statusPill(row, viewer)}</td>
       ${showUpdate ? `<td>${row.updated ? showTime(row.updated) : '—'}</td>` : ''}
-      ${actions ? `<td><button type="button" class="text-btn" data-action="transaction" data-id="${row.id}">${row.status === 'pending' && viewer.role !== 'user' ? '처리' : '상세'} ${icon('chevron', 15)}</button></td>` : ''}</tr>`).join('')}</tbody></table></div>`;
+      ${actions ? `<td><button type="button" class="text-btn" data-action="transaction" data-id="${row.id}">${row.status === 'pending' && viewer.role !== 'user' ? '처리' : '상세'} ${icon('chevron', 15)}</button></td>` : ''}</tr>`).join('')}</tbody></table></div>${moreButton(total, named.length)}`;
 }
 
-export function details(state, row) {
+export function details(state, row, viewer) {
   const owner = account(state, row.userId);
-  return `<div class="form-summary"><div><span>거래번호</span><strong>${row.id}</strong></div><div><span>거래 유형</span><strong>${types[row.type]}</strong></div>
+  return `<div class="form-summary"><div><span>거래번호</span><strong>${escape(row.id)}</strong></div><div><span>거래 유형</span><strong>${types[row.type]}</strong></div>
     <div><span>회원</span><strong>${escape(owner?.name ?? '—')}</strong></div>
     <div><span>거래 내용</span><strong>${transactionLabel(state, row.counterpart ? { ...row, counterpartName: account(state, row.counterpart)?.name } : row)}</strong></div>
     ${row.type === 'exchange' ? `<div><span>교환 비율</span><strong>${row.rate}:1</strong></div>` : ''}
     <div><span>거래 포인트</span><strong>${money(Math.abs(row.points))}</strong></div>
     ${row.type === 'withdrawal' ? `<div><span>수수료</span><strong>${money(row.fee ?? 0)}</strong></div><div><span>실수령액</span><strong>${format(row.points - (row.fee ?? 0))}원</strong></div>` : ''}
     <div><span>신청 일시</span><strong>${showTime(row.date)}</strong></div>
-    <div><span>상태</span>${pill(statuses[row.status], row.status)}</div>
+    <div><span>상태</span>${statusPill(row, viewer)}</div>
+    ${row.partnerApproved && row.status === 'pending' ? `<div><span>2차 승인 사유</span><strong>${escape(row.review ?? '')}</strong></div>` : ''}
+    ${row.ref ? `<div><span>원 거래</span><strong>${escape(row.ref)}</strong></div>` : ''}
+    ${row.reversed ? `<div><span>회수</span><strong>${showTime(row.reversed.at)} · ${escape(row.reversed.reason)}</strong></div>` : ''}
     ${row.updated ? `<div><span>처리 일시</span><strong>${showTime(row.updated)}</strong></div>` : ''}
-    ${row.reason ? `<div><span>반려 사유</span><strong>${escape(row.reason)}</strong></div>` : ''}
+    ${row.reason ? `<div><span>${row.type === 'coupon' ? '취소 사유' : '반려 사유'}</span><strong>${escape(row.reason)}</strong></div>` : ''}
     ${row.memo && !['gift_out', 'gift_in'].includes(row.type) ? '' : row.memo ? `<div><span>메시지</span><strong>${escape(row.memo)}</strong></div>` : ''}
   </div>`;
 }

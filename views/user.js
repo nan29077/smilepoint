@@ -19,19 +19,25 @@ export const userDescriptions = {
   profile: '프로필 사진, 동물 캐릭터, 연락처와 알림 설정을 관리하세요.',
 };
 
-const unlinkedNote = '<p class="muted small">웹하드 아이디를 입력해 계정을 연결하면 교환 가능 포인트를 불러옵니다.</p>';
+const unlinkedNote = '<p class="muted small">웹하드 아이디를 입력하면 해당 웹하드로 인증번호가 전송됩니다. 웹하드에서 받은 번호를 입력해야 연결이 완료되고 교환 가능 포인트를 불러옵니다.</p>';
 
 function partnerExchangeCards(state, me) {
   return `<div class="card-grid partner-grid four">${state.partners.map(item => {
     const link = me.links[item.id];
+    const verified = !!link?.verified;
+    const waiting = link && !verified;
     const available = partnerAvailable(state, me.id, item.id);
-    return `<article class="partner-card ${link ? 'linked' : ''} ${item.active ? '' : 'inactive'}">
-      <div class="partner-top"><span class="partner-logo ${item.color}">${item.initials}</span>${link ? pill('연결됨', 'complete') : pill(item.active ? '미연결' : '일시 중지')}</div>
-      <h3>${item.name}</h3><p class="partner-rate"><strong>${item.divisor} P</strong>${icon('arrow', 16)}<strong>1 스마일 P</strong></p>
-      <dl class="mini-dl"><div><dt>교환 가능</dt><dd>${!link ? '—' : available === null ? '승인 시 확인' : format(available) + ' P'}</dd></div><div><dt>최소 신청</dt><dd>${format(item.min)} P</dd></div><div><dt>승인 시간</dt><dd>${item.approval}</dd></div></dl>
-      <div class="partner-actions">${!item.active ? '<span class="muted small">점검 중입니다</span>' : link
-        ? action('교환하기', 'exchange', `data-id="${item.id}" ${available !== null && available < item.min ? 'disabled' : ''}`, 'btn primary sm', 'exchange') + action('연결 해제', 'unlink', `data-id="${item.id}"`, 'text-btn')
-        : action('계정 연결', 'link', `data-id="${item.id}"`, 'btn outline sm', 'link')}</div>
+    const status = verified ? pill('연결됨', 'complete') : waiting ? pill('인증 대기', 'pending') : pill(item.active ? '미연결' : '일시 중지');
+    const actions = !item.active ? '<span class="muted small">점검 중입니다</span>'
+      : verified ? action('교환하기', 'exchange', `data-id="${item.id}" ${available !== null && available < item.min ? 'disabled' : ''}`, 'btn primary sm', 'exchange') + action('연결 해제', 'unlink', `data-id="${item.id}"`, 'text-btn')
+      : waiting ? action('인증번호 입력', 'link-verify', `data-id="${item.id}"`, 'btn primary sm', 'key') + action('취소', 'unlink-confirm', `data-id="${item.id}"`, 'text-btn')
+      : action('계정 연결', 'link', `data-id="${item.id}"`, 'btn outline sm', 'link');
+    return `<article class="partner-card ${verified ? 'linked' : ''} ${item.active ? '' : 'inactive'}">
+      <div class="partner-top"><span class="partner-logo ${item.color}">${escape(item.initials)}</span>${status}</div>
+      <h3>${escape(item.name)}</h3><p class="partner-rate"><strong>${item.divisor} P</strong>${icon('arrow', 16)}<strong>1 스마일 P</strong></p>
+      <dl class="mini-dl"><div><dt>교환 가능</dt><dd>${!verified ? (waiting ? '인증 후 확인' : '—') : available === null ? '승인 시 확인' : format(available) + ' P'}</dd></div><div><dt>최소 신청</dt><dd>${format(item.min)} P</dd></div><div><dt>승인 시간</dt><dd>${escape(item.approval)}</dd></div></dl>
+      ${waiting ? `<p class="muted small">${escape(link.loginId)} · ${escape(item.name)}에서 받은 인증번호를 입력하세요.</p>` : ''}
+      <div class="partner-actions">${actions}</div>
     </article>`;
   }).join('')}</div>`;
 }
@@ -47,7 +53,7 @@ function overview(state, me) {
   const daily = series(rows.filter(row => row.status === 'complete' && ['exchange', 'attendance', 'reward', 'gift_in'].includes(row.type)), 14, row => row.points);
   const prevWeek = daily.slice(0, 7).reduce((s, d) => s + d.value, 0), thisWeek = daily.slice(7).reduce((s, d) => s + d.value, 0);
   const spentBy = type => rows.filter(row => row.type === type && ['complete', 'pending'].includes(row.status)).reduce((sum, row) => sum + row.points, 0);
-  const linked = state.partners.filter(item => me.links[item.id]);
+  const linked = state.partners.filter(item => me.links[item.id]?.verified);
   return `<section class="dash-banner user-banner"><div>
       <span class="eyebrow">${level.name} 회원 · 내 지갑</span>
       <h1>${escape(me.name)}님, 안녕하세요.</h1>
@@ -82,7 +88,7 @@ function overview(state, me) {
     </div>
     <div class="dash-grid two-one">
       ${panel('최근 거래', table(state, rows.slice(0, 6), me), button('전체 내역', '#app/user/activity', 'text-btn', 'chevron'))}
-      ${panel('연결된 웹하드', linked.length ? `<ul class="link-list">${linked.map(item => `<li><span class="partner-logo ${item.color} sm">${item.initials}</span><div><strong>${item.name}</strong><small>${escape(me.links[item.id].loginId)}</small></div><b>${format(partnerAvailable(state, me.id, item.id))} P</b></li>`).join('')}</ul>` : blank('연결된 웹하드가 없습니다.', 'link'), button('관리', '#app/user/exchange', 'text-btn', 'chevron'))}
+      ${panel('연결된 웹하드', linked.length ? `<ul class="link-list">${linked.map(item => `<li><span class="partner-logo ${item.color} sm">${escape(item.initials)}</span><div><strong>${escape(item.name)}</strong><small>${escape(me.links[item.id].loginId)}</small></div><b>${partnerAvailable(state, me.id, item.id) === null ? '승인 시 확인' : format(partnerAvailable(state, me.id, item.id)) + ' P'}</b></li>`).join('')}</ul>` : blank('연결된 웹하드가 없습니다.', 'link'), button('관리', '#app/user/exchange', 'text-btn', 'chevron'))}
     </div>
     ${panel('공지사항', announcementList(state.announcements.slice(0, 3)))}`;
 }
@@ -102,6 +108,7 @@ function withdrawalPage(state, me) {
   const level = grade(state, me.id);
   const history = visibleTransactions(state, me).filter(row => row.type === 'withdrawal');
   const limitLeft = Math.max(0, state.settings.dailyWithdrawLimit - withdrawnToday(state, me.id));
+  if (me.bankRequest) return `${bankConfirm(state, me)}${panel('출금 내역', table(state, history, me))}`;
   if (!me.bank?.verified) return `${bankForm(me, false)}${panel('출금 내역', table(state, history, me))}`;
   const max = Math.min(bal.available, limitLeft);
   return `<div class="dash-grid two-one">
@@ -114,7 +121,7 @@ function withdrawalPage(state, me) {
         <p class="muted small">최소 ${format(state.settings.withdrawalMinimum)} P · 승인 후 다음 영업일 입금 · 처리 대기 중에는 취소할 수 있어요.</p>
       </form></section>
     <div class="side-stack">
-      <section class="panel bank-card"><span class="eyebrow">출금 계좌</span><h2>${me.bank.bank}</h2><p class="bank-number">${maskAccount(me.bank.number)}</p><p class="muted small">예금주 ${escape(me.bank.holder)} · ${pill('본인 확인 완료', 'complete')}</p>
+      <section class="panel bank-card"><span class="eyebrow">출금 계좌</span><h2>${escape(me.bank.bank)}</h2><p class="bank-number">${maskAccount(me.bank.number)}</p><p class="muted small">예금주 ${escape(me.bank.holder)} · ${pill('본인 확인 완료', 'complete')}</p>
         ${action('계좌 변경', 'bank-edit', '', 'btn outline sm', 'edit')}</section>
       <section class="panel"><h2>등급별 수수료</h2><ul class="fee-list">${grades.map(g => `<li class="${g.id === level.id ? 'on' : ''}"><span>${g.name}</span><b>${g.feeRate ? format(Math.round(state.settings.fee * g.feeRate)) + ' P' : '무료'}</b></li>`).join('')}</ul></section>
     </div></div>
@@ -123,11 +130,23 @@ function withdrawalPage(state, me) {
 
 export function bankForm(me, editing) {
   return `<section class="panel max-form"><div class="panel-head"><h2>${editing ? '출금 계좌 변경' : '출금 계좌 등록'}</h2>${pill('본인 명의만 가능', 'pending')}</div>
-    <p class="muted">예금주가 회원 이름(<b>${escape(me.name)}</b>)과 같아야 등록됩니다. 등록 즉시 1원 인증을 모의로 진행합니다.</p>
+    <p class="muted">예금주가 회원 이름(<b>${escape(me.name)}</b>)과 같아야 합니다. 입력한 계좌로 <b>1원</b>을 보내 드리며, 입금자명에 적힌 숫자 4자리를 입력하면 인증이 끝납니다. 계좌를 등록하면 이름은 바꿀 수 없습니다.</p>
     <form class="stack" data-form="bank"><label for="bank-name">은행</label><select id="bank-name" name="bank" required><option value="">은행 선택</option>${banks.map(item => `<option ${me.bank?.bank === item ? 'selected' : ''}>${item}</option>`).join('')}</select>
-      <label for="bank-number">계좌번호</label><input id="bank-number" name="number" inputmode="numeric" required placeholder="'-' 없이 숫자만">
-      <label for="bank-holder">예금주</label><input id="bank-holder" name="holder" required value="${escape(me.name)}">
-      <button class="btn primary" type="submit">계좌 인증하고 등록 ${icon('check', 17)}</button></form></section>`;
+      <label for="bank-number">계좌번호</label><input id="bank-number" name="number" inputmode="numeric" required maxlength="20" placeholder="'-' 없이 숫자만">
+      <label for="bank-holder">예금주</label><input id="bank-holder" name="holder" required maxlength="24" value="${escape(me.name)}">
+      <button class="btn primary" type="submit">1원 보내고 인증하기 ${icon('send', 17)}</button>
+      ${editing ? action('취소', 'ui', 'data-key="bankEdit" data-value=""', 'btn outline') : ''}</form></section>`;
+}
+export function bankConfirm(state, me) {
+  const request = me.bankRequest;
+  const expired = request.expires < Date.now();
+  const manual = state.server?.mode === 'server' && state.server?.demo === false && !state.server?.bankVerify;
+  return `<section class="panel max-form"><div class="panel-head"><h2>출금 계좌 인증</h2>${pill(expired ? '시간 만료' : '인증 대기', expired ? 'rejected' : 'pending')}</div>
+    <p><b>${escape(request.bank)}</b> ${escape(request.masked ?? '••••' + String(request.number ?? '').slice(-4))} 계좌로 1원을 보냈습니다.</p>
+    <p class="muted small">${manual ? '자동 1원 송금이 연결되지 않아 운영팀이 명의를 확인한 뒤 승인합니다. 승인되면 알림으로 알려 드려요. 운영팀 안내를 받은 경우 아래에 숫자를 입력할 수도 있습니다.' : '은행 앱의 입금 내역에서 입금자명 <b>스마일○○○○</b>의 숫자 4자리를 입력하세요. 30분 안에 입력해야 합니다.'}</p>
+    ${expired ? '' : `<form class="stack" data-form="bank-confirm"><label for="bank-code">입금자명 숫자 4자리</label><input id="bank-code" name="code" inputmode="numeric" autocomplete="one-time-code" required pattern="[0-9]{4}" maxlength="4" placeholder="0000">
+      <button class="btn primary" type="submit">인증 완료 ${icon('check', 17)}</button></form>`}
+    <div class="dialog-actions">${action('다른 계좌로 다시 등록', 'bank-retry', '', 'btn outline sm', 'refresh')}</div></section>`;
 }
 
 function shopPage(state, me) {
@@ -149,9 +168,13 @@ function couponsPage(state, me, ui) {
     ${list.length ? `<div class="card-grid coupon-grid">${list.map(row => {
       const product = state.products.find(item => item.id === row.product);
       const left = Math.ceil((new Date(row.coupon.expires) - Date.now()) / 86400000);
+      const hidden = !row.coupon.revealed || !row.coupon.code;
+      const code = hidden ? '' : `<button type="button" class="barcode-btn" data-action="barcode" data-id="${row.id}" aria-label="바코드 크게 보기">${barcode(row.coupon.code)}<code>${escape(row.coupon.code).replace(/(\d{4})(?=\d)/g, '$1 ')}</code></button>`;
+      const reveal = `<button type="button" class="barcode-btn locked" data-action="coupon-reveal" data-id="${row.id}">${icon('eye', 22)}<span>쿠폰 번호 보기</span><small>번호를 확인하면 직접 취소할 수 없어요</small></button>`;
+      const canCancel = hidden && Date.now() - new Date(row.date) <= 7 * 86400000;
       return `<article class="coupon ${row.coupon.used ? 'used' : ''}"><div class="coupon-top"><span class="eyebrow">${escape(product?.brand ?? '')}</span>${tab === 'usable' ? pill('D-' + left, left < 15 ? 'pending' : 'complete') : pill(labels[tab])}</div>
-        <h2>${escape(productName(state, row.product))}</h2>${tab === 'canceled' ? `<p class="canceled-note">취소된 쿠폰입니다${row.reason ? ' · ' + escape(row.reason) : ''}</p>` : `<button type="button" class="barcode-btn" data-action="barcode" data-id="${row.id}" aria-label="바코드 크게 보기">${barcode(row.coupon.code)}<code>${row.coupon.code.replace(/(\d{4})(?=\d)/g, '$1 ')}</code></button>`}
-        <div class="coupon-foot"><small>~ ${showDate(row.coupon.expires)} · ${format(row.points)} P</small>${tab === 'usable' ? `<span class="coupon-actions">${Date.now() - new Date(row.date) <= 7 * 86400000 ? action('취소', 'coupon-cancel', `data-id="${row.id}"`, 'text-btn muted-btn') : ''}${action('사용 완료', 'coupon-used', `data-id="${row.id}"`, 'text-btn')}</span>` : tab === 'used' ? action('되돌리기', 'coupon-unused', `data-id="${row.id}"`, 'text-btn') : tab === 'canceled' ? `<small>${row.points.toLocaleString('ko-KR')} P 환불</small>` : ''}</div></article>`;
+        <h2>${escape(productName(state, row.product))}</h2>${tab === 'canceled' ? `<p class="canceled-note">취소된 쿠폰입니다${row.reason ? ' · ' + escape(row.reason) : ''}</p>` : hidden && tab !== 'expired' ? reveal : code}
+        <div class="coupon-foot"><small>~ ${showDate(row.coupon.expires)} · ${format(row.points)} P</small>${tab === 'usable' ? `<span class="coupon-actions">${canCancel ? action('취소', 'coupon-cancel', `data-id="${row.id}"`, 'text-btn muted-btn') : ''}${hidden ? '' : action('사용 완료', 'coupon-used', `data-id="${row.id}"`, 'text-btn')}</span>` : tab === 'used' ? action('되돌리기', 'coupon-unused', `data-id="${row.id}"`, 'text-btn') : tab === 'canceled' ? `<small>${row.points.toLocaleString('ko-KR')} P 환불</small>` : ''}</div></article>`;
     }).join('')}</div>` : blank(tab === 'usable' ? '사용 가능한 쿠폰이 없습니다. 포인트 쇼핑에서 골라 보세요.' : labels[tab] + ' 쿠폰이 없습니다.', 'ticket')}
     ${tab === 'usable' ? `<p class="center">${button('쿠폰 쇼핑하기', '#app/user/shop', 'btn outline', 'shop')}</p>` : ''}`;
 }
@@ -224,7 +247,7 @@ export function supportPage(state, me, viewerIsAdmin = false, ui = {}) {
   const tickets = (viewerIsAdmin ? state.tickets : state.tickets.filter(item => item.userId === me.id)).filter(item => !filter || item.status === filter);
   const list = tickets.length ? `<div class="ticket-list">${tickets.map(item => {
     const owner = state.accounts.find(a => a.id === item.userId);
-    return `<article><div class="ticket-head"><div>${pill(item.category)} ${item.transaction ? `<small>${item.transaction}</small>` : ''}</div>${pill(item.status === 'answered' ? '답변 완료' : '답변 대기', item.status === 'answered' ? 'complete' : 'pending')}</div>
+    return `<article><div class="ticket-head"><div>${pill(escape(item.category))} ${item.transaction ? `<small>${escape(item.transaction)}</small>` : ''}</div>${pill(item.status === 'answered' ? '답변 완료' : '답변 대기', item.status === 'answered' ? 'complete' : 'pending')}</div>
       ${viewerIsAdmin ? `<p class="ticket-user">${avatar(owner, 'xs')} <b>${escape(owner?.name)}</b> <small>${escape(owner?.email)}</small></p>` : ''}
       <p>${escape(item.message)}</p><small class="muted">${showTime(item.date)}</small>
       ${item.reply ? `<div class="ticket-reply"><strong>${icon('check', 14)} 운영팀 답변</strong><p>${escape(item.reply)}</p><small>${showTime(item.repliedAt)}</small></div>` : viewerIsAdmin ? `<form class="stack reply-form" data-form="reply" data-id="${item.id}"><label for="reply-${item.id}" class="sr-only">답변</label><textarea rows="2" id="reply-${item.id}" name="reply" maxlength="500" required placeholder="답변을 입력하세요"></textarea><div class="chips">${['확인 후 처리해 드렸습니다. 이용에 불편을 드려 죄송합니다.', '내 프로필 > 출금 계좌에서 변경하실 수 있습니다.'].map(t => `<button type="button" class="chip" data-action="template" data-target="reply-${item.id}" data-value="${t}">${t.slice(0, 14)}…</button>`).join('')}</div><button type="submit" class="btn primary sm">답변 등록</button></form>` : ''}
@@ -236,7 +259,7 @@ export function supportPage(state, me, viewerIsAdmin = false, ui = {}) {
   return `<div class="dash-grid two-one">
     <section class="panel"><h2>1:1 문의하기</h2><form class="stack" data-form="ticket">
       <div class="field-grid"><div><label for="ticket-category">문의 유형</label><select name="category" id="ticket-category">${ticketCategories.map(c => `<option>${c}</option>`).join('')}</select></div>
-      <div><label for="ticket-transaction">관련 거래 <small class="muted">(선택)</small></label><select name="transaction" id="ticket-transaction"><option value="">선택 안 함</option>${visibleTransactions(state, me).slice(0, 30).map(row => `<option value="${row.id}">${row.id} · ${types[row.type]}</option>`).join('')}</select></div></div>
+      <div><label for="ticket-transaction">관련 거래 <small class="muted">(선택)</small></label><select name="transaction" id="ticket-transaction"><option value="">선택 안 함</option>${visibleTransactions(state, me).slice(0, 30).map(row => `<option value="${escape(row.id)}">${escape(row.id)} · ${types[row.type]}</option>`).join('')}</select></div></div>
       <label for="ticket-text">문의 내용</label><textarea id="ticket-text" name="message" maxlength="500" rows="5" required placeholder="문의하실 내용을 자세히 적어 주세요."></textarea>
       <button class="btn primary" type="submit">문의 등록 ${icon('send', 16)}</button></form></section>
     <section class="panel contact-card"><span class="feature-icon tone-1">${icon('help', 24)}</span><h2>고객센터 1588-0000</h2><p class="muted small">평일 10:00 ~ 18:00 (점심 12:00 ~ 13:00)<br>주말·공휴일 휴무 · 1:1 문의는 24시간 접수</p></section></div>
@@ -255,14 +278,34 @@ export function profilePage(state, me) {
     </section>
     <div class="side-stack">
       <section class="panel"><h2>기본 정보</h2><form class="stack" data-form="profile"><label for="profile-name">표시 이름</label><input id="profile-name" name="name" required maxlength="24" value="${escape(me.name)}">
-        <label for="profile-phone">연락처</label><input id="profile-phone" name="phone" value="${escape(me.phone ?? '')}">
-        <label>이메일</label><input value="${escape(me.email)}" disabled>
+        <label for="profile-phone">연락처</label><input id="profile-phone" name="phone" inputmode="tel" maxlength="20" value="${escape(me.phone ?? '')}">
+        <label for="profile-email">이메일</label><input id="profile-email" value="${escape(me.email)}" disabled>
+        ${isUser && (me.bank || me.bankRequest) ? '<p class="muted small">출금 계좌를 등록해 이름은 바꿀 수 없습니다.</p>' : ''}
         <button class="btn primary sm" type="submit">저장</button></form></section>
       ${isUser ? `<section class="panel"><h2>알림 설정</h2><form class="stack" data-form="notify">${[['email', '이메일 알림'], ['sms', '문자 알림'], ['marketing', '이벤트·혜택 수신']].map(([k, l]) => `<label class="switch"><input type="checkbox" name="${k}" ${me.notify?.[k] ? 'checked' : ''} data-autosubmit><i></i>${l}</label>`).join('')}</form></section>
-      <section class="panel"><h2>출금 계좌</h2>${me.bank ? `<p><b>${me.bank.bank}</b> ${maskAccount(me.bank.number)} ${pill('인증', 'complete')}</p>` : '<p class="muted small">등록된 계좌가 없습니다.</p>'}${button(me.bank ? '계좌 관리' : '계좌 등록', '#app/user/withdrawal', 'text-btn', 'chevron')}</section>` : ''}
+      <section class="panel"><h2>출금 계좌</h2>${me.bank ? `<p><b>${escape(me.bank.bank)}</b> ${maskAccount(me.bank.number)} ${pill('인증', 'complete')}</p>` : '<p class="muted small">등록된 계좌가 없습니다.</p>'}${button(me.bank ? '계좌 관리' : '계좌 등록', '#app/user/withdrawal', 'text-btn', 'chevron')}</section>` : ''}
       <section class="panel"><h2>로그인 · 보안</h2><p class="muted small">가입 방법 <b>${providerName(me.provider)}</b>${me.lastLogin ? ' · 최근 로그인 ' + showTime(me.lastLogin) : ''}</p>
-        ${me.password ? `<form class="stack" data-form="password"><label for="pw-now">현재 비밀번호</label><input id="pw-now" name="before" type="password" autocomplete="current-password" required><label for="pw-new">새 비밀번호</label><input id="pw-new" name="after" type="password" autocomplete="new-password" required placeholder="영문+숫자 8자 이상"><button class="btn outline sm" type="submit">비밀번호 변경</button></form>` : `<p class="muted small">${providers[me.provider]?.name} 계정으로 로그인합니다.</p>`}</section>
+        ${me.password ? `<form class="stack" data-form="password"><label for="pw-now">현재 비밀번호</label><input id="pw-now" name="before" type="password" autocomplete="current-password" required><label for="pw-new">새 비밀번호</label><input id="pw-new" name="after" type="password" autocomplete="new-password" required placeholder="영문+숫자 8자 이상"><button class="btn outline sm" type="submit">비밀번호 변경</button></form>` : `<p class="muted small">${escape(providers[me.provider]?.name ?? '')} 계정으로 로그인합니다.</p>`}</section>
+      ${!isUser && me.password ? totpPanel(state, me) : ''}
+      ${isUser ? deletePanel(state, me) : ''}
     </div></div>`;
+}
+
+// 운영진 2단계 인증 (Google Authenticator·Microsoft Authenticator 등 OTP 앱)
+function totpPanel(state, me) {
+  const live = state.server?.mode === 'server';
+  return `<section class="panel"><div class="panel-head"><h2>2단계 인증</h2>${pill(me.totp ? '사용 중' : '꺼짐', me.totp ? 'complete' : 'pending')}</div>
+    ${!live ? '<p class="muted small">서버를 실행한 환경(npm run dev)에서 설정할 수 있습니다.</p>'
+      : me.totp ? `<p class="muted small">로그인할 때 비밀번호와 함께 인증 앱의 6자리 코드를 입력합니다.</p><form class="stack" data-form="totp-disable"><label for="totp-off">인증 앱 코드</label><input id="totp-off" name="code" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" maxlength="6" required><button class="btn outline sm" type="submit">2단계 인증 끄기</button></form>`
+      : `<p class="muted small">비밀번호가 유출되어도 계정을 지킬 수 있도록 인증 앱 코드를 함께 확인합니다. ${me.role === 'admin' ? '<b>최고 관리자는 반드시 켜 두세요.</b>' : ''}</p>${action('2단계 인증 설정', 'totp-setup', '', 'btn primary sm', 'shield')}`}</section>`;
+}
+function deletePanel(state, me) {
+  const left = balances(state, me.id).available;
+  return `<details class="panel danger-zone"><summary>회원 탈퇴</summary>
+    <p class="muted small">탈퇴하면 이름·이메일·연락처·계좌·웹하드 연결 정보가 즉시 파기되고 다시 되돌릴 수 없습니다. 거래 기록은 관련 법령에 따라 일정 기간 익명으로 보관됩니다.${left > 0 ? ` <b>남은 ${format(left)} P는 소멸됩니다.</b> 출금하거나 쿠폰으로 사용한 뒤 탈퇴해 주세요.` : ''}</p>
+    <form class="stack" data-form="delete-account">${me.password ? '<label for="del-pw">비밀번호 확인</label><input id="del-pw" name="password" type="password" autocomplete="current-password" required>' : `<label for="del-confirm">확인을 위해 <b>탈퇴</b>를 입력하세요</label><input id="del-confirm" name="confirm" required>`}
+      <label class="check"><input type="checkbox" name="agree" required> 안내 내용을 확인했으며 탈퇴에 동의합니다.</label>
+      <button class="btn danger sm" type="submit">탈퇴하기</button></form></details>`;
 }
 
 export function notificationList(state, me) {

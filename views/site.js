@@ -111,7 +111,7 @@ export function landing(state, index) {
   const example = `<div class="story-example"><span>그린파일 12,000 P</span><strong>스마일 6,000 P 적립</strong></div>`;
   const terms = [['최소 신청 금액', format(state.settings.withdrawalMinimum) + ' P'], ['건당 수수료', format(fee) + ' P (등급별 할인)'], ['예상 입금일', '승인 후 다음 영업일']];
   const steps = [
-    ['user', '회원가입', `카카오·네이버 또는 이메일로 30초 만에 가입하고 ${format(state.settings.signupBonus)} P를 받으세요.`],
+    ['user', '회원가입', `카카오·네이버 또는 이메일로 30초 만에 가입하세요. 첫 교환을 마치면 가입 축하 ${format(state.settings.signupBonus)} P를 드려요.`],
     ['link', '웹하드 연결', '포인트가 있는 웹하드 계정을 연결하면 교환 가능 잔액이 표시돼요.'],
     ['exchange', '교환 신청', '받을 포인트를 확인하고 신청하세요. 승인되면 알림을 보내 드려요.'],
     ['gift', '출금 또는 쇼핑', '계좌로 출금하거나 모바일 쿠폰을 사고, 친구에게 선물할 수도 있어요.'],
@@ -143,7 +143,7 @@ export function landing(state, index) {
         <div class="wallet-states">${[['clock', '적립 예정', '교환을 신청하고 제휴사 승인을 기다리는 포인트예요.'], ['wallet', '사용 가능', '지금 출금하거나 쿠폰을 사고 선물할 수 있는 포인트예요.'], ['bank', '처리 중', '출금을 신청해 지급 결과를 기다리는 포인트예요.']].map(([glyph, title, copy]) => `<div>${icon(glyph, 20)}<div><strong>${title}</strong><p>${copy}</p></div></div>`).join('')}</div>
       </div>
     </section>
-    <section class="cta-band"><div class="container cta-inner"><div><h2>지금 가입하면 ${format(state.settings.signupBonus)} P를 드려요</h2><p>카카오·네이버로 3초 만에 시작하고, 친구를 초대하면 둘 다 ${format(state.settings.referralBonus)} P!</p></div>
+    <section class="cta-band"><div class="container cta-inner"><div><h2>첫 교환을 마치면 ${format(state.settings.signupBonus)} P를 더 드려요</h2><p>카카오·네이버로 3초 만에 시작하고, 친구를 초대하면 둘 다 ${format(state.settings.referralBonus)} P!</p></div>
       <div class="cta-actions">${button('회원가입', '#signup', 'btn lime', 'arrow')}<a class="btn ghost" href="#login">로그인</a></div></div></section>
     <section class="help-section section" id="support"><div class="container">
       <div class="section-head">${heading('고객센터', '무엇을 도와드릴까요?', `자주 묻는 질문을 먼저 확인해 보세요. 고객센터 ${config.support} · ${config.hours}`)}${button('1:1 문의하기', '#app/user/support', 'btn outline')}</div>
@@ -159,26 +159,37 @@ function authAside(title, copy) {
     <ul>${['웹하드 포인트를 한곳에 모아 교환', '본인 계좌로 출금, 등급별 수수료 할인', '모바일 쿠폰 쇼핑과 포인트 선물'].map(item => `<li>${icon('check', 17)}${item}</li>`).join('')}</ul></div></aside>`;
 }
 
-function socialButtons(mode) {
+// 운영 서버에서는 앱 키를 등록한(연동된) 소셜 로그인만 보여 준다. 데모에서는 모두 체험용으로 표시한다.
+export const socialAvailable = (state, id) => state.server?.mode !== 'server' || state.server?.demo !== false || !!state.server?.oauth?.[id];
+function socialButtons(state, mode) {
   const verb = mode === 'signup' ? '가입하기' : '로그인';
-  return `<div class="social-buttons">
-    <button type="button" class="social kakao" data-action="social" data-id="kakao">${socialMark.kakao}<span>카카오로 ${verb}</span></button>
-    <button type="button" class="social naver" data-action="social" data-id="naver">${socialMark.naver}<span>네이버로 ${verb}</span></button>
-    <div class="social-row"><button type="button" class="social google" data-action="social" data-id="google">${socialMark.google}<span>Google</span></button>
-    <button type="button" class="social apple" data-action="social" data-id="apple">${socialMark.apple}<span>Apple</span></button></div>
-  </div>`;
+  const on = id => socialAvailable(state, id);
+  if (!['kakao', 'naver', 'google', 'apple'].some(on)) return '';
+  const wide = [on('kakao') && `<button type="button" class="social kakao" data-action="social" data-id="kakao">${socialMark.kakao}<span>카카오로 ${verb}</span></button>`,
+    on('naver') && `<button type="button" class="social naver" data-action="social" data-id="naver">${socialMark.naver}<span>네이버로 ${verb}</span></button>`].filter(Boolean).join('');
+  const row = [on('google') && `<button type="button" class="social google" data-action="social" data-id="google">${socialMark.google}<span>Google</span></button>`,
+    on('apple') && `<button type="button" class="social apple" data-action="social" data-id="apple">${socialMark.apple}<span>Apple</span></button>`].filter(Boolean).join('');
+  return `<div class="social-buttons">${wide}${row ? `<div class="social-row">${row}</div>` : ''}</div>
+    <div class="divider"><span>또는 이메일로 ${mode === 'signup' ? '가입' : '로그인'}</span></div>`;
 }
+const loginNotices = {
+  'social-canceled': '소셜 로그인을 취소했습니다.',
+  'social-failed': '소셜 로그인에 실패했습니다. 잠시 뒤 다시 시도하거나 이메일로 로그인해 주세요.',
+  'social-blocked': '이용이 제한된 계정입니다. 고객센터로 문의해 주세요.',
+  'social-unavailable': '아직 연결되지 않은 로그인 방식입니다. 다른 방법으로 로그인해 주세요.',
+};
 
-export function login(state) {
+export function login(state, notice = '') {
   return `${header(state)}<main id="main" class="auth-page"><div class="auth-shell">
     ${authAside('다시 만나서 반가워요.', '로그인하고 오늘의 출석 포인트를 받아 가세요.')}
     <div class="auth-card"><span class="eyebrow">로그인</span><h1>${config.name} 로그인</h1>
       <p class="muted">소셜 계정 또는 이메일로 로그인하세요.</p>
-      ${socialButtons('login')}
-      <div class="divider"><span>또는 이메일로 로그인</span></div>
+      ${loginNotices[notice] ? `<div class="notice-bar warn" role="alert">${icon('alert', 18)}<span>${loginNotices[notice]}</span></div>` : ''}
+      ${socialButtons(state, 'login')}
       <form class="stack auth-form" data-form="login" novalidate>
         <label for="login-email">이메일</label><input id="login-email" name="email" type="email" autocomplete="username" required placeholder="name@example.com">
         <label for="login-password">비밀번호</label><div class="password-field"><input id="login-password" name="password" type="password" autocomplete="current-password" required placeholder="비밀번호"><button type="button" class="icon-btn" data-action="toggle-password" aria-label="비밀번호 표시">${icon('eye', 18)}</button></div>
+        <div class="stack otp-field" data-otp hidden><label for="login-otp">인증 앱 6자리 코드</label><input id="login-otp" name="otp" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" maxlength="6" placeholder="000000"><small class="muted">2단계 인증을 켠 계정입니다. 인증 앱(Google Authenticator 등)의 코드를 입력하세요.</small></div>
         <div class="auth-row"><label class="check"><input type="checkbox" name="remember" checked> 로그인 상태 유지</label><button type="button" class="text-btn" data-action="find-password">비밀번호 찾기</button></div>
         <button class="btn primary block" type="submit">로그인 ${icon('login', 17)}</button>
       </form>
@@ -193,10 +204,9 @@ export function login(state) {
 
 export function signup(state) {
   return `${header(state)}<main id="main" class="auth-page"><div class="auth-shell">
-    ${authAside(`가입하면 ${format(state.settings.signupBonus)} P를 바로 드려요.`, '소셜 계정으로 3초 만에, 이메일로도 간단하게 시작할 수 있어요.')}
+    ${authAside(`첫 교환을 마치면 ${format(state.settings.signupBonus)} P를 드려요.`, '소셜 계정으로 3초 만에, 이메일로도 간단하게 시작할 수 있어요.')}
     <div class="auth-card"><span class="eyebrow">회원가입</span><h1>${config.name} 시작하기</h1>
-      ${socialButtons('signup')}
-      <div class="divider"><span>또는 이메일로 가입</span></div>
+      ${socialButtons(state, 'signup')}
       <form class="stack auth-form" data-form="signup" novalidate>
         <div class="field-grid"><div><label for="su-name">이름</label><input id="su-name" name="name" required maxlength="20" autocomplete="name" placeholder="홍길동"></div>
         <div><label for="su-phone">휴대폰 번호</label><input id="su-phone" name="phone" inputmode="tel" autocomplete="tel" placeholder="010-0000-0000"></div></div>
@@ -212,7 +222,8 @@ export function signup(state) {
           <label class="check"><input type="checkbox" name="age" data-term> [필수] 만 14세 이상입니다</label>
           <label class="check"><input type="checkbox" name="marketing" data-term> [선택] 이벤트·혜택 알림 수신 동의</label>
         </fieldset>
-        <button class="btn primary block" type="submit">가입하고 ${format(state.settings.signupBonus)} P 받기 ${icon('arrow', 17)}</button>
+        <button class="btn primary block" type="submit">가입하기 ${icon('arrow', 17)}</button>
+        <p class="muted small center">가입 축하 ${format(state.settings.signupBonus)} P${state.settings.referralBonus ? `(추천 코드 입력 시 +${format(state.settings.referralBonus)} P)` : ''}는 첫 포인트 교환이 완료되면 지급됩니다.</p>
       </form>
       <p class="auth-switch">이미 회원이신가요? <a href="#login">로그인</a></p>
     </div>
@@ -225,6 +236,22 @@ export function legalPage(state, kind) {
     <nav class="tabs" aria-label="약관 종류"><a class="tab ${kind === 'terms' ? 'active' : ''}" href="#terms">이용약관</a><a class="tab ${kind === 'privacy' ? 'active' : ''}" href="#privacy">개인정보처리방침</a></nav>
     <article class="panel legal-doc"><h1>${doc.title}</h1>${legalBody(kind)}</article>
   </div></main>${footer(state)}`;
+}
+
+// 소셜 계정으로 처음 가입할 때 약관 동의를 받는 화면 (실제 OAuth 연동 시)
+export function termsFields() {
+  return `<fieldset class="terms"><legend class="sr-only">약관 동의</legend>
+    <label class="check all"><input type="checkbox" data-check-all> <strong>전체 동의</strong></label>
+    <div class="term-row"><label class="check"><input type="checkbox" name="terms" data-term required> [필수] 서비스 이용약관 동의</label><button type="button" class="text-btn" data-action="policy" data-value="terms">보기</button></div>
+    <div class="term-row"><label class="check"><input type="checkbox" name="privacy" data-term required> [필수] 개인정보 수집·이용 동의</label><button type="button" class="text-btn" data-action="policy" data-value="privacy">보기</button></div>
+    <label class="check"><input type="checkbox" name="age" data-term required> [필수] 만 14세 이상입니다</label>
+    <label class="check"><input type="checkbox" name="marketing" data-term> [선택] 이벤트·혜택 알림 수신 동의</label></fieldset>`;
+}
+export function socialTermsPage(state, token) {
+  return `${header(state)}<main id="main" class="auth-page"><div class="auth-card solo"><span class="eyebrow">회원가입</span><h1>약관 동의</h1>
+    <p class="muted">처음 오셨네요! 아래 약관에 동의하면 가입이 완료됩니다.</p>
+    <form class="stack auth-form" data-form="social-terms" data-token="${escape(token)}">${termsFields()}<button class="btn primary block" type="submit">동의하고 가입하기 ${icon('arrow', 17)}</button></form>
+    <p class="auth-switch"><a href="#login">취소하고 돌아가기</a></p></div></main>`;
 }
 
 export function resetPage(state, token) {

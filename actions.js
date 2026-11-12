@@ -9,15 +9,23 @@ const admin = run => ({ role: 'admin', run });
 const reviewer = run => ({ role: ['partner', 'admin'], run });
 const anyone = run => ({ run });
 const open = (run, extra = {}) => ({ public: true, run, ...extra });
+const consentOf = p => ({ terms: !!p.terms, privacy: !!p.privacy, age: !!p.age, marketing: !!p.marketing });
+const demoOnly = (result, o) => { if (o.demo) return result; const { code, ...rest } = result; return rest; };
 
 export const ops = {
   // 인증
-  login: open((s, _, p) => S.login(s, p.email, p.password), { auth: true }),
+  login: open((s, _, p) => S.login(s, p.email, p.password, p.otp), { auth: true }),
   loginAs: open((s, _, p) => {
     if (!testAccounts.some(item => item.id === p.id)) throw new S.AppError('테스트 계정이 아닙니다.', 403);
     return S.loginAs(s, p.id);
   }, { auth: true, demo: true }),
-  socialDemo: open((s, _, p) => S.socialLogin(s, p.provider), { auth: true, demo: true }),
+  socialDemo: open((s, _, p) => S.socialLogin(s, p.provider, null, new Date(), consentOf(p)), { auth: true, demo: true }),
+  // 실제 OAuth 첫 가입: 서버가 보관한 소셜 프로필(token)에 약관 동의를 더해 가입을 마친다.
+  socialComplete: open((s, _, p, o) => {
+    const pending = o.takeSocial?.(String(p.token ?? ''));
+    if (!pending) throw new S.AppError('소셜 로그인 시간이 지났습니다. 처음부터 다시 시도해 주세요.', 410);
+    return S.socialLogin(s, pending.provider, pending.profile, new Date(), consentOf(p));
+  }, { auth: true }),
   signup: open((s, _, p) => S.signup(s, { ...p, provider: 'email' }), { auth: true }),
   logout: open(s => S.logout(s)),
   requestReset: open((s, _, p) => S.requestReset(s, p.email)),
@@ -25,17 +33,23 @@ export const ops = {
 
   // 사용자
   exchange: user((s, a, p) => S.exchange(s, a.id, p.partnerId, p.amount)),
-  linkPartner: user((s, a, p) => S.linkPartner(s, a.id, p.partnerId, p.loginId)),
+  // 인증번호는 데모에서만 화면에 돌려준다 (운영에서는 제휴사·은행을 통해서만 전달).
+  linkPartner: user((s, a, p, o) => demoOnly(S.linkPartner(s, a.id, p.partnerId, p.loginId), o)),
+  confirmLink: user((s, a, p) => S.confirmLink(s, a.id, p.partnerId, p.code)),
   unlinkPartner: user((s, a, p) => S.unlinkPartner(s, a.id, p.partnerId)),
   withdraw: user((s, a, p) => S.withdraw(s, a.id, p.amount)),
-  setBank: user((s, a, p) => S.setBank(s, a.id, p)),
-  order: user((s, a, p) => S.order(s, a.id, p.productId, p.quantity)),
+  setBank: user((s, a, p, o) => demoOnly(S.setBank(s, a.id, p), o)),
+  confirmBank: user((s, a, p) => S.confirmBank(s, a.id, p.code)),
+  cancelBankRequest: user((s, a) => S.cancelBankRequest(s, a.id)),
+  order: user((s, a, p) => S.order(s, a.id, p.productId, p.quantity).map(row => ({ ...row, coupon: { ...row.coupon, code: '' } }))),
+  revealCoupon: user((s, a, p) => S.revealCoupon(s, a.id, p.id)),
   setCouponUsed: user((s, a, p) => S.setCouponUsed(s, a.id, p.id, !!p.used)),
   cancelCoupon: { role: ['user', 'admin'], run: (s, a, p) => S.cancelCoupon(s, a.id, p.id, p.reason) },
   attend: user((s, a) => S.attend(s, a.id)),
   gift: user((s, a, p) => S.gift(s, a.id, p.email, p.amount, p.message)),
   openTicket: user((s, a, p) => S.openTicket(s, a.id, p)),
   seenTickets: user((s, a) => { for (const t of s.tickets) if (t.userId === a.id && t.status === 'answered') t.seen = true; }),
+  deleteAccount: user((s, a, p) => S.deleteAccount(s, a.id, p)),
 
   // 모든 로그인 계정
   updateProfile: anyone((s, a, p) => S.updateProfile(s, a.id, p)),
@@ -44,10 +58,14 @@ export const ops = {
   setPhoto: anyone((s, a, p) => S.setPhoto(s, a.id, p.photo)),
   readAll: anyone((s, a) => S.readAll(s, a)),
   cancel: anyone((s, a, p) => S.update(s, a.id, p.id, 'canceled')),
+  setupTotp: { role: ['partner', 'admin'], run: (s, a) => S.setupTotp(s, a.id) },
+  enableTotp: { role: ['partner', 'admin'], run: (s, a, p) => S.enableTotp(s, a.id, p.code) },
+  disableTotp: { role: ['partner', 'admin'], run: (s, a, p) => S.disableTotp(s, a.id, p.code) },
 
   // 심사 (웹하드 관리자·최고 관리자)
   review: reviewer((s, a, p) => S.update(s, a.id, p.id, p.status, p.reason)),
-  bulkReview: reviewer((s, a, p) => S.bulkUpdate(s, a.id, Array.isArray(p.ids) ? p.ids.slice(0, 200) : [], p.status, p.reason)),
+  bulkReview: reviewer((s, a, p) => S.bulkUpdate(s, a.id, Array.isArray(p.ids) ? p.ids.slice(0, 200).map(String) : [], p.status, p.reason)),
+  reverseExchange: reviewer((s, a, p) => S.reverseExchange(s, a.id, p.id, p.reason)),
 
   // 웹하드 관리자
   regenerateKey: partner((s, a) => S.regenerateKey(s, a.id)),
@@ -58,6 +76,8 @@ export const ops = {
   // 최고 관리자
   adjust: admin((s, a, p) => S.adjust(s, a.id, p.userId, p.amount, p.reason)),
   setMemberStatus: admin((s, a, p) => S.setMemberStatus(s, a.id, p.userId, p.status)),
+  approveBank: admin((s, a, p) => S.approveBank(s, a.id, p.userId)),
+  payoutAccount: admin((s, a, p) => S.payoutAccount(s, a.id, p.id)),
   updatePartner: admin((s, a, p) => S.updatePartner(s, a.id, p.partnerId, p)),
   createPartner: admin((s, a, p) => S.createPartner(s, a.id, p)),
   updateProduct: admin((s, a, p) => S.updateProduct(s, a.id, p.productId, p)),
@@ -85,11 +105,12 @@ export const ops = {
  * @param {string|null} actorId 로그인한 계정 id (서버에서는 세션으로만 결정)
  * @param {string} op ops의 키
  * @param {object} payload 요청 값
- * @param {{demo?: boolean}} options demo가 false면 테스트 로그인·초기화를 막는다
+ * @param {{demo?: boolean, takeSocial?: Function}} options demo가 false면 테스트 로그인·초기화를 막고 인증번호를 숨긴다
  */
-const maintenanceBlocked = new Set(['exchange', 'linkPartner', 'unlinkPartner', 'withdraw', 'setBank', 'order', 'cancelCoupon', 'attend', 'gift', 'cancel']);
+const maintenanceBlocked = new Set(['exchange', 'linkPartner', 'confirmLink', 'unlinkPartner', 'withdraw', 'setBank', 'confirmBank', 'order', 'cancelCoupon', 'attend', 'gift', 'cancel']);
 
-export function dispatch(state, actorId, op, payload = {}, { demo = true } = {}) {
+export function dispatch(state, actorId, op, payload = {}, options = {}) {
+  const demo = options.demo ?? true;
   const spec = Object.hasOwn(ops, op) ? ops[op] : null;
   if (!spec) throw new S.AppError('알 수 없는 요청입니다.', 404);
   if (spec.demo && !demo) throw new S.AppError('운영 환경에서는 사용할 수 없는 기능입니다.', 403);
@@ -102,14 +123,15 @@ export function dispatch(state, actorId, op, payload = {}, { demo = true } = {})
     if (state.settings?.maintenance && actor.role === 'user' && maintenanceBlocked.has(op)) throw new S.AppError('서비스 점검 중이라 잠시 이용할 수 없습니다. 점검이 끝난 뒤 다시 시도해 주세요.', 503);
   }
   if (state.settings?.maintenance && op === 'signup') throw new S.AppError('서비스 점검 중에는 회원가입을 할 수 없습니다.', 503);
-  return spec.run(state, actor, payload && typeof payload === 'object' ? payload : {});
+  return spec.run(state, actor, payload && typeof payload === 'object' && !Array.isArray(payload) ? payload : {}, { ...options, demo });
 }
 
 // 응답에 비밀번호 해시 등이 섞이지 않도록 정리한다.
 export function clean(result) {
   if (Array.isArray(result)) return result.map(clean);
+  if (result && typeof result === 'object' && 'role' in result && 'email' in result) return S.privateAccount(result);
   if (result && typeof result === 'object') {
-    const { password, apiKey, ...rest } = result;
+    const { password, apiKey, totp, bankRequest, ...rest } = result;
     return rest;
   }
   return result ?? null;

@@ -1,5 +1,5 @@
 import { escape, format, icon } from '../catalog.js';
-import { account, kstDay, series, settlementStatus, visibleTransactions } from '../state.js';
+import { account, kstDay, linkRequests, series, settlementStatus, visibleTransactions } from '../state.js';
 import { activityFilters, applyFilters } from './user.js';
 import { action, ago, avatar, barChart, blank, button, donut, metric, money, panel, pill, showTime, table, trend } from './ui.js';
 
@@ -33,16 +33,16 @@ export function pendingQueue(state, viewer, rows, { showUser = true } = {}) {
 function overview(state, me, partner) {
   const rows = visibleTransactions(state, me);
   const today = kstDay();
-  const pending = rows.filter(row => row.status === 'pending');
+  const pending = rows.filter(row => row.status === 'pending' && !row.partnerApproved);
   const approvedToday = rows.filter(row => row.status === 'complete' && row.updated && kstDay(row.updated) === today);
   const daily = series(rows.filter(row => row.status !== 'canceled'), 14, row => row.source);
   const thisWeek = daily.slice(7).reduce((s, d) => s + d.value, 0), lastWeek = daily.slice(0, 7).reduce((s, d) => s + d.value, 0);
   const members = new Set(rows.map(row => row.userId)).size;
   const count = status => rows.filter(row => row.status === status).length;
-  return `<section class="dash-banner partner-banner"><div><span class="eyebrow">웹하드 관리자 · ${partner.name}</span>
+  return `<section class="dash-banner partner-banner"><div><span class="eyebrow">웹하드 관리자 · ${escape(partner.name)}</span>
       <h1>${escape(me.name)}님, 오늘 처리할 교환이 ${pending.length}건 있어요.</h1><p>승인하면 회원에게 즉시 적립 알림이 발송됩니다.</p>
       <div class="banner-actions">${button('교환 요청 처리', '#app/partner/requests', 'btn lime sm', 'exchange')}${button('정산 보기', '#app/partner/settlement', 'btn ghost sm', 'chart')}</div></div>
-      <span class="partner-logo ${partner.color} xl">${partner.initials}</span></section>
+      <span class="partner-logo ${partner.color} xl">${escape(partner.initials)}</span></section>
     <div class="card-grid metrics four">
       ${metric('처리 대기', pending.length + '건', 'clock', `대기 포인트 ${format(pending.reduce((s, r) => s + r.source, 0))} P`, 2)}
       ${metric('오늘 승인', approvedToday.length + '건', 'check', `${format(approvedToday.reduce((s, r) => s + r.source, 0))} P 차감`, 0)}
@@ -113,12 +113,14 @@ function integration(state, me, partner, ui) {
       <hr><form class="stack" data-form="webhook"><label for="webhook">웹훅 수신 URL</label><div class="inline-field"><input id="webhook" name="url" value="${escape(partner.webhook)}" required placeholder="https://"><button class="btn primary sm" type="submit">저장</button></div></form>
       <div class="hook-actions">${action('웹훅 테스트 전송', 'test-webhook', '', 'btn outline sm', 'send')}<span class="muted small">서명 헤더 <code>X-SmilePoint-Signature: sha256=HMAC(API 키, 본문)</code></span></div></section>
     <section class="panel"><h2>API 명세</h2><ul class="endpoint-list">
-      <li><b class="get">GET</b><code>/api/v1/exchanges?status=pending</code><small>자사 교환 신청 목록</small></li>
-      <li><b class="post">POST</b><code>/api/v1/exchanges/{id}/approve</code><small>승인 · 회원 포인트 적립</small></li>
+      <li><b class="get">GET</b><code>/api/v1/exchanges?status=pending&amp;limit=100&amp;offset=0</code><small>자사 교환 신청 목록 · 응답의 <code>next</code>로 다음 페이지</small></li>
+      <li><b class="post">POST</b><code>/api/v1/exchanges/{id}/approve</code><small>승인 · 회원 포인트 적립 (고액·일일 한도 초과 건은 <code>review.status=admin_review</code>로 2차 승인 대기)</small></li>
       <li><b class="post">POST</b><code>/api/v1/exchanges/{id}/reject</code><small>반려 · 본문 <code>{"reason":"사유"}</code></small></li>
+      <li><b class="post">POST</b><code>/api/v1/exchanges/{id}/reverse</code><small>완료 30일 이내 교환 회수 · 본문 <code>{"reason":"사유"}</code></small></li>
+      <li><b class="get">GET</b><code>/api/v1/link-requests</code><small>회원 연결 인증번호 목록 (웹하드 쪽지 등으로 해당 회원에게만 전달)</small></li>
       <li><b class="get">GET</b><code>/api/v1/settlements?date=YYYY-MM-DD</code><small>일자별 대사 자료</small></li>
       <li><b class="post">POST</b><code>/api/v1/settlements/{YYYY-MM-DD}</code><small>자사 합계 제출 <code>{"count":0,"amount":0}</code> → 일치/불일치</small></li></ul>
-      <p class="muted small">웹훅 이벤트: <code>exchange.requested</code> <code>exchange.canceled</code> <code>ping</code> · 실패 시 30초 간격 최대 3회 재시도</p>
+      <p class="muted small">웹훅 이벤트: <code>member.link_requested</code> <code>member.linked</code> <code>member.unlinked</code> <code>exchange.requested</code> <code>exchange.canceled</code> <code>exchange.completed</code> <code>exchange.rejected</code> <code>exchange.reversed</code> <code>ping</code> · 실패 시 30초 간격 최대 3회 재시도</p>
       <pre class="code-sample">curl -H "X-Api-Key: ${ui.reveal ? partner.apiKey : 'sp_live_…'}" \\
   "${base}/api/v1/exchanges?status=pending"</pre></section></div>
     <div class="dash-grid two-one">
@@ -128,8 +130,9 @@ function integration(state, me, partner, ui) {
 }
 
 function policy(state, partner) {
-  return `<div class="dash-grid two-one"><section class="panel"><div class="panel-head"><h2>${partner.name} 교환 정책</h2>${pill(partner.active ? '운영 중' : '일시 중지', partner.active ? 'complete' : 'rejected')}</div>
-    <div class="form-summary"><div><span>교환 비율</span><strong>${partner.divisor} P → 1 스마일 P</strong></div><div><span>최소 신청 금액</span><strong>${format(partner.min)} P</strong></div><div><span>교환 대상</span><strong>${partner.type}</strong></div><div><span>안내 승인 시간</span><strong>${partner.approval}</strong></div><div><span>정산 기준</span><strong>스마일 1 P = 1원 · 월 2회</strong></div></div>
+  return `<div class="dash-grid two-one"><section class="panel"><div class="panel-head"><h2>${escape(partner.name)} 교환 정책</h2>${pill(partner.active ? '운영 중' : '일시 중지', partner.active ? 'complete' : 'rejected')}</div>
+    <div class="form-summary"><div><span>교환 비율</span><strong>${partner.divisor} P → 1 스마일 P</strong></div><div><span>최소 신청 금액</span><strong>${format(partner.min)} P</strong></div><div><span>교환 대상</span><strong>${escape(partner.type)}</strong></div><div><span>안내 승인 시간</span><strong>${escape(partner.approval)}</strong></div><div><span>일일 승인 한도</span><strong>${partner.dailyLimit ? format(partner.dailyLimit) + ' 스마일 P' : '제한 없음'}</strong></div><div><span>2차 승인 기준</span><strong>${partner.reviewOver ? format(partner.reviewOver) + ' 스마일 P 초과' : '없음'}</strong></div><div><span>정산 기준</span><strong>스마일 1 P = 1원 · 월 2회</strong></div></div>
+    <p class="muted small">고액이거나 하루 승인 합계가 한도를 넘는 교환은 승인하면 스마일 포인트 운영팀의 2차 승인 후 적립됩니다.</p>
     <p class="muted small">정책 변경은 계약 조건에 따라 최고 관리자가 반영합니다. 변경이 필요하면 운영팀(partner@smilepoint.kr)에 요청해 주세요.</p></section>
     <section class="panel"><h2>교환 예시</h2><ul class="fee-list">${[10000, 50000, 100000].map(v => `<li><span>${format(v)} P 교환</span><b>${format(Math.floor(v / partner.divisor))} 스마일 P</b></li>`).join('')}</ul></section></div>`;
 }
@@ -139,7 +142,7 @@ export function partnerPage(state, me, page, ui, profilePage) {
   const rows = visibleTransactions(state, me);
   switch (page) {
     case 'overview': return overview(state, me, partner);
-    case 'requests': return `${pendingQueue(state, me, rows)}${panel('처리 내역', table(state, rows.filter(row => row.status !== 'pending').slice(0, 30), me, { showUser: true, showUpdate: true }))}`;
+    case 'requests': return `${linkPanel(state, me.partnerId)}${pendingQueue(state, me, rows)}${panel('처리 내역', table(state, rows.filter(row => row.status !== 'pending'), me, { showUser: true, showUpdate: true }))}`;
     case 'activity': return `${activityFilters(ui, ['exchange'])}<section class="panel" data-csv>${table(state, applyFilters(state, rows, ui), me, { showUser: true, showUpdate: true })}</section>`;
     case 'settlement': return `<div class="tabs">${[7, 14, 30].map(d => `<button type="button" class="tab ${(Number(ui.days) || 14) === d ? 'active' : ''}" data-action="ui" data-key="days" data-value="${d}">최근 ${d}일</button>`).join('')}</div>${settlementTable(state, [partner], Number(ui.days) || 14, { canConfirm: true })}`;
     case 'integration': return integration(state, me, partner, ui);
@@ -147,6 +150,15 @@ export function partnerPage(state, me, page, ui, profilePage) {
     case 'profile': return profilePage(state, me);
     default: return '';
   }
+}
+
+// 회원 연결 인증번호: API로 가져가지 않는 제휴사는 이 화면에서 확인해 해당 웹하드 회원에게 전달한다.
+function linkPanel(state, partnerId) {
+  const list = state.linkRequests ?? linkRequests(state, partnerId); // 서버는 목록을 보내 주고, 브라우저 데모는 직접 계산
+  if (!list.length) return '';
+  return `<section class="panel"><div class="panel-head"><h2>회원 연결 인증 ${pill(list.length + '건', 'pending')}</h2></div>
+    <p class="muted small">아래 아이디의 웹하드 회원에게만 인증번호를 전달하세요 (웹하드 쪽지·알림 등). 번호는 10분 뒤 만료됩니다.</p>
+    <div class="table-scroll"><table><thead><tr><th>웹하드 아이디</th><th>인증번호</th><th>요청</th><th>만료</th></tr></thead><tbody>${list.map(item => `<tr><td><strong>${escape(item.member)}</strong></td><td><code>${escape(item.code)}</code></td><td>${showTime(item.requestedAt)}</td><td>${showTime(item.expiresAt)}</td></tr>`).join('')}</tbody></table></div></section>`;
 }
 
 export const memberCell = (state, id) => { const a = account(state, id); return a ? `${avatar(a, 'xs')} ${escape(a.name)}` : '—'; };

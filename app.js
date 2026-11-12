@@ -4,7 +4,7 @@ import * as S from './state.js';
 import { memberDetail, partnerForm, productForm } from './views/admin.js';
 import { dashboard, pages, pageTitle } from './views/dashboard.js';
 import { legalBody } from './views/legal.js';
-import { hero, landing, legalPage, login, resetPage, signup, slides } from './views/site.js';
+import { hero, landing, legalPage, login, resetPage, signup, slides, socialAvailable, socialTermsPage, termsFields } from './views/site.js';
 import { barcode, details, filteredProducts, money, productVisual, showDate } from './views/ui.js';
 import { notificationList } from './views/user.js';
 
@@ -30,12 +30,23 @@ const live = () => server.mode === 'server';
 async function api(path, body) {
   const response = await fetch(path, body === undefined ? { credentials: 'same-origin' } : { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json', 'X-SmilePoint': '1' }, body: JSON.stringify(body) });
   const data = await response.json().catch(() => ({}));
-  if (!response.ok) throw Object.assign(new Error(data.error || data.message || '요청을 처리하지 못했습니다.'), { status: response.status });
+  if (!response.ok) throw Object.assign(new Error(data.error || data.message || '요청을 처리하지 못했습니다.'), { status: response.status, need: data.need });
   return data;
 }
+const publicOps = new Set(['login', 'loginAs', 'socialDemo', 'socialComplete', 'signup', 'requestReset', 'resetWithToken', 'logout']);
 async function act(op, payload = {}) {
   if (live()) {
-    const data = await api('./api/action', { op, payload });
+    let data;
+    try { data = await api('./api/action', { op, payload }); }
+    catch (error) {
+      // 다른 기기에서 비밀번호를 바꾸는 등으로 로그인이 끊긴 경우: 최신 상태를 받아 로그인 화면으로 보낸다.
+      if (error.status === 401 && !publicOps.has(op)) {
+        try { state = withServer((await api('./api/state')).state); } catch {}
+        if (modal.open) modal.close();
+        if (!me()) { nextAfterLogin = location.hash.slice(1); location.replace('#login'); render(); throw new Error('로그인이 만료되었습니다. 다시 로그인해 주세요.'); }
+      }
+      throw error;
+    }
     state = withServer(data.state);
     return data.result;
   }
@@ -81,7 +92,8 @@ function getRoute() {
   if (section === 'app' && ['user', 'partner', 'admin'].includes(role)) {
     return { view: 'dashboard', role, page: pages(role).some(([id]) => id === page) ? page : 'overview' };
   }
-  if (section === 'login') return { view: 'login' };
+  if (section === 'login') return { view: 'login', notice: role ?? '' };
+  if (section === 'social' && /^[\w-]{20,}$/.test(role ?? '')) return { view: 'social', token: role };
   if (section === 'signup') return { view: 'signup' };
   if (section === 'terms' || section === 'privacy') return { view: 'legal', page: section };
   if (section === 'reset' && /^[\w-]{16,}$/.test(role ?? '')) return { view: 'reset', token: role };
@@ -111,9 +123,10 @@ function render(keepScroll = false) {
   const caret = focusKey ? active.selectionStart : null;
 
   document.title = route.view === 'dashboard' ? `${pageTitle(route.role, route.page)} | ${config.name}`
-    : route.view === 'login' ? `로그인 | ${config.name}` : route.view === 'signup' ? `회원가입 | ${config.name}` : route.view === 'legal' ? `${route.page === 'privacy' ? '개인정보처리방침' : '이용약관'} | ${config.name}` : route.view === 'reset' ? `비밀번호 재설정 | ${config.name}` : `${config.name} - 흩어진 포인트를 한곳에`;
+    : route.view === 'login' ? `로그인 | ${config.name}` : route.view === 'signup' || route.view === 'social' ? `회원가입 | ${config.name}` : route.view === 'legal' ? `${route.page === 'privacy' ? '개인정보처리방침' : '이용약관'} | ${config.name}` : route.view === 'reset' ? `비밀번호 재설정 | ${config.name}` : `${config.name} - 흩어진 포인트를 한곳에`;
   if (route.view === 'dashboard') app.innerHTML = dashboard(state, viewer, route.page, ui);
-  else if (route.view === 'login') app.innerHTML = login(state);
+  else if (route.view === 'login') app.innerHTML = login(state, route.notice);
+  else if (route.view === 'social') app.innerHTML = socialTermsPage(state, route.token);
   else if (route.view === 'signup') app.innerHTML = signup(state);
   else if (route.view === 'legal') app.innerHTML = legalPage(state, route.page);
   else if (route.view === 'reset') app.innerHTML = resetPage(state, route.token);
@@ -193,10 +206,22 @@ function exchangeDialog(id) {
 function linkDialog(id) {
   const item = state.partners.find(partner => partner.id === id);
   if (!item) return;
-  dialog(item.name + ' 계정 연결', `<p class="muted">${item.name}에서 사용하는 아이디를 입력하세요. 실제 서비스에서는 ${item.name} 로그인(OAuth) 또는 인증번호로 본인을 확인합니다.</p>
-    <form class="stack" data-form="link" data-id="${id}"><label for="link-id">${item.name} 아이디</label><input id="link-id" name="loginId" required minlength="4" maxlength="20" placeholder="영문·숫자 4~20자" autocomplete="off">
+  const name = escape(item.name);
+  dialog(name + ' 계정 연결', `<p class="muted">${name}에서 사용하는 아이디를 입력하세요. ${name}로 6자리 인증번호가 전송되며, 번호를 입력해야 연결이 완료됩니다.</p>
+    <form class="stack" data-form="link" data-id="${id}"><label for="link-id">${name} 아이디</label><input id="link-id" name="loginId" required minlength="4" maxlength="20" placeholder="영문·숫자 4~20자" autocomplete="off">
     <label class="check"><input type="checkbox" name="agree" required> 포인트 잔액 조회 및 교환을 위한 정보 제공에 동의합니다.</label>
-    <button class="btn primary block" type="submit">연결하기 ${icon('link', 17)}</button></form>`);
+    <button class="btn primary block" type="submit">인증번호 받기 ${icon('send', 17)}</button></form>`);
+}
+function linkVerifyDialog(id, demoCode = '') {
+  const item = state.partners.find(partner => partner.id === id);
+  const link = me()?.links?.[id];
+  if (!item || !link) return;
+  const name = escape(item.name);
+  dialog(name + ' 인증번호 입력', `<p class="muted"><b>${escape(link.loginId)}</b> 계정으로 ${name}에서 보낸 6자리 인증번호를 입력하세요. (10분 안에, 5회까지)</p>
+    ${demoCode ? `<div class="notice-bar">${icon('key', 18)}<span><b>데모</b> 실제로는 ${name} 쪽지·알림으로 전달되는 번호입니다: <code>${escape(demoCode)}</code></span></div>` : ''}
+    <form class="stack" data-form="link-confirm" data-id="${id}"><label for="link-code">인증번호</label><input id="link-code" name="code" inputmode="numeric" autocomplete="one-time-code" required pattern="[0-9]{6}" maxlength="6" placeholder="000000">
+    <button class="btn primary block" type="submit">연결 완료 ${icon('check', 17)}</button>
+    <button class="text-btn" type="button" data-action="link" data-id="${id}">번호를 받지 못했어요 · 다시 요청</button></form>`, 'narrow');
 }
 function productDialog(id) {
   const item = state.products.find(product => product.id === id);
@@ -218,7 +243,10 @@ function transactionDialog(id) {
   if (!row) return;
   const options = [['complete', row.type === 'withdrawal' ? '지급 완료' : '승인'], ['rejected', '반려'], ['canceled', '신청 취소']].filter(([status]) => S.canUpdate(row, viewer, status));
   const couponCancel = viewer.role === 'admin' && row.type === 'coupon' && row.status === 'complete' && !row.coupon?.used;
-  dialog('거래 상세', `${details(state, row)}
+  const reversible = row.type === 'exchange' && row.status === 'complete' && !row.reversed && (viewer.role === 'admin' || (viewer.role === 'partner' && Date.now() - new Date(row.updated ?? row.date) <= 30 * 86400000));
+  dialog('거래 상세', `${details(state, row, viewer)}
+    ${viewer.role === 'admin' && row.type === 'withdrawal' && row.status === 'pending' ? `<div class="dialog-actions" data-payout-box><button class="btn outline sm" type="button" data-action="payout-account" data-id="${row.id}">${icon('eye', 16)}지급 계좌번호 확인</button><small class="muted">열람 기록이 감사 기록에 남습니다.</small></div>` : ''}
+    ${reversible ? `<details class="danger-zone"><summary>교환 회수</summary><p class="muted small">판매 취소·부정 적립 등으로 이 교환의 스마일 포인트 ${format(row.points)} P를 회원에게서 회수합니다. 이미 사용했다면 잔액이 마이너스가 될 수 있습니다.</p><label for="reverse-reason" class="small-label">회수 사유 <small class="muted">(회원에게 안내됩니다)</small></label><input id="reverse-reason" maxlength="100" placeholder="예: 판매 취소로 웹하드 포인트 환원"><div class="dialog-actions"><button class="btn danger sm" type="button" data-action="reverse" data-id="${row.id}">회수하기</button></div></details>` : ''}
     ${couponCancel ? `<label for="reject-reason" class="small-label">취소 사유 <small class="muted">(회원에게 안내됩니다)</small></label><input id="reject-reason" maxlength="100" placeholder="예: 공급사 품절로 발행 불가"><div class="dialog-actions"><button class="btn danger" type="button" data-action="coupon-cancel-confirm" data-id="${row.id}">주문 취소·환불</button></div>` : ''}
     ${options.some(([s]) => s === 'rejected') ? `<label for="reject-reason" class="small-label">반려 사유 <small class="muted">(반려 시 필수)</small></label><input id="reject-reason" maxlength="100" placeholder="예: 판매 포인트 정산 보류">` : ''}
     <div class="dialog-actions">${options.map(([status, label]) => `<button class="btn ${status === 'complete' ? 'primary' : status === 'rejected' ? 'danger' : 'outline'}" type="button" data-action="status" data-id="${row.id}" data-value="${status}">${label}</button>`).join('')}
@@ -226,10 +254,12 @@ function transactionDialog(id) {
 }
 function socialDialog(provider) {
   const p = providers[provider];
+  if (!p) return;
   dialog(`${p.name} 계정으로 계속하기`, `<div class="social-consent ${provider}"><span class="social-mark">${socialMark[provider]}</span><p><b>${config.name}</b>이(가) ${p.name} 계정으로 로그인하려고 합니다.</p></div>
     <div class="form-summary"><div><span>제공 항목</span><strong>이름, 이메일, 프로필 사진</strong></div><div><span>선택 항목</span><strong>휴대폰 번호</strong></div></div>
-    <p class="muted small">개발 중인 데모입니다. 실제 ${p.name} 로그인은 앱 키를 등록하고 SDK를 연동한 뒤 사용할 수 있습니다. 지금은 체험용 ${p.name} 회원으로 로그인합니다.</p>
-    <button type="button" class="social ${provider} block" data-action="social-confirm" data-id="${provider}">${socialMark[provider]}<span>동의하고 계속하기</span></button>`, 'narrow');
+    <p class="muted small">개발 중인 데모입니다. 실제 ${p.name} 로그인은 앱 키를 등록한 뒤 사용할 수 있습니다. 지금은 체험용 ${p.name} 회원으로 로그인합니다. 처음 가입하는 경우 아래 약관에 동의해 주세요.</p>
+    <form class="stack" data-form="social-demo" data-id="${provider}">${termsFields()}
+    <button type="submit" class="social ${provider} block">${socialMark[provider]}<span>동의하고 계속하기</span></button></form>`, 'narrow');
 }
 
 // ───────── CSV ─────────
@@ -278,8 +308,11 @@ async function onAction(event) {
       wrap.nextElementSibling.innerHTML = filteredProducts(state, value, wrap.querySelector('[data-filter=product]')?.value ?? '');
       break;
     }
-    case 'social': if (live() && server.oauth?.[id]) { location.href = './auth/' + id; break; } socialDialog(id); break;
-    case 'social-confirm': { const account = await act('socialDemo', { provider: id }); afterLogin(account, `${providers[id].name} 계정으로 로그인했습니다.`); break; }
+    case 'social':
+      if (live() && server.oauth?.[id]) { location.href = './auth/' + id; break; }
+      if (!socialAvailable(state, id)) { notify('아직 연결되지 않은 로그인 방식입니다. 다른 방법으로 로그인해 주세요.', 'error'); break; }
+      socialDialog(id);
+      break;
     case 'test-login': { const account = await act('loginAs', { id }); afterLogin(account, `${account.name}(테스트 계정)으로 로그인했습니다.`); break; }
     case 'toggle-password': { const input = trigger.previousElementSibling; input.type = input.type === 'password' ? 'text' : 'password'; trigger.setAttribute('aria-label', input.type === 'password' ? '비밀번호 표시' : '비밀번호 숨기기'); break; }
     case 'find-password': dialog('비밀번호 찾기', `<form class="stack" data-form="find"><p class="muted">가입한 이메일로 비밀번호 재설정 링크를 보내 드립니다.</p><label for="find-email">이메일</label><input id="find-email" name="email" type="email" required><button class="btn primary" type="submit">재설정 링크 받기</button></form>`, 'narrow'); break;
@@ -289,7 +322,40 @@ async function onAction(event) {
     case 'unlink':
       dialog('연결 해제', `<p>${state.partners.find(p => p.id === id)?.name} 연결을 해제할까요? 다시 연결하면 잔액을 새로 불러옵니다.</p><div class="dialog-actions"><button class="btn danger" type="button" data-action="unlink-confirm" data-id="${id}">해제</button><button class="btn outline" type="button" data-action="close">취소</button></div>`, 'narrow');
       break;
-    case 'unlink-confirm': await act('unlinkPartner', { partnerId: id }); refresh('웹하드 연결을 해제했습니다.'); break;
+    case 'unlink-confirm': { const waiting = me()?.links?.[id] && !me().links[id].verified; await act('unlinkPartner', { partnerId: id }); refresh(waiting ? '연결 요청을 취소했습니다.' : '웹하드 연결을 해제했습니다.'); break; }
+    case 'link-verify': linkVerifyDialog(id); break;
+    case 'bank-retry': await act('cancelBankRequest'); ui.bankEdit = '1'; refresh(); break;
+    case 'bank-approve': await act('approveBank', { userId: id }); dialog('회원 상세', memberDetail(state, me(), id), 'wide'); render(true); notify('계좌 인증을 승인했습니다.'); break;
+    case 'payout-account': {
+      const info = await act('payoutAccount', { id });
+      const box = trigger.closest('[data-payout-box]');
+      if (box) box.innerHTML = `<div class="code-box wide"><code>${escape(info.bank)} ${escape(info.number)} · ${escape(info.holder)}</code><button type="button" class="btn outline sm" data-action="copy" data-value="${escape(info.number)}">${icon('copy', 16)}복사</button></div>`;
+      break;
+    }
+    case 'reverse': {
+      const reason = document.getElementById('reverse-reason')?.value ?? '';
+      await act('reverseExchange', { id, reason });
+      refresh('교환을 회수했습니다. 회원에게 알림을 보냈어요.');
+      break;
+    }
+    case 'coupon-reveal':
+      dialog('쿠폰 번호 보기', '<p>쿠폰 번호를 확인하면 <b>직접 취소·환불할 수 없습니다.</b> 매장에서 사용할 때 열어 주세요.</p><div class="dialog-actions"><button class="btn primary" type="button" data-action="coupon-reveal-confirm" data-id="' + escape(id) + '">번호 보기</button><button class="btn outline" type="button" data-action="close">닫기</button></div>', 'narrow');
+      break;
+    case 'coupon-reveal-confirm': {
+      const info = await act('revealCoupon', { id });
+      refresh();
+      const row = state.transactions.find(item => item.id === id);
+      dialog(escape(state.products.find(p => p.id === row?.product)?.name ?? '쿠폰'), `<div class="barcode-large">${barcode(info.code)}<code>${escape(info.code).replace(/(\d{4})(?=\d)/g, '$1 ')}</code></div><p class="muted small center">매장 직원에게 바코드를 보여 주세요. 유효기간 ~ ${showDate(info.expires)}</p>`, 'narrow');
+      break;
+    }
+    case 'totp-setup': {
+      const setup = await act('setupTotp');
+      dialog('2단계 인증 설정', `<p class="muted">휴대폰의 인증 앱(Google Authenticator, Microsoft Authenticator 등)에서 <b>설정 키 입력</b>을 선택하고 아래 키를 등록하세요.</p>
+        <div class="code-box wide"><code>${escape(setup.secret.replace(/(.{4})(?=.)/g, '$1 '))}</code><button type="button" class="btn outline sm" data-action="copy" data-value="${escape(setup.secret)}">${icon('copy', 16)}복사</button></div>
+        <p class="muted small">계정 이름: SmilePoint · 시간 기준(TOTP) · 6자리. 등록 후 앱에 표시되는 코드를 입력하면 켜집니다.</p>
+        <form class="stack" data-form="totp-enable"><label for="totp-on">인증 앱 코드</label><input id="totp-on" name="code" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" maxlength="6" required placeholder="000000"><button class="btn primary" type="submit">확인하고 켜기</button></form>`, 'narrow');
+      break;
+    }
     case 'product': productDialog(id); break;
     case 'qty': {
       const input = document.getElementById('qty');
@@ -300,8 +366,8 @@ async function onAction(event) {
     case 'transaction': transactionDialog(id); break;
     case 'status': {
       const reason = document.getElementById('reject-reason')?.value ?? '';
-      await act(value === 'canceled' ? 'cancel' : 'review', { id, status: value, reason });
-      refresh(value === 'complete' ? '처리를 완료했습니다. 회원에게 알림을 보냈어요.' : value === 'rejected' ? '신청을 반려했습니다.' : '신청을 취소했습니다. 포인트가 복원되었어요.');
+      const row = await act(value === 'canceled' ? 'cancel' : 'review', { id, status: value, reason });
+      refresh(row?.status === 'pending' && row?.partnerApproved ? `승인했습니다. ${row.review} 건이라 운영팀 2차 승인 후 적립됩니다.` : value === 'complete' ? '처리를 완료했습니다. 회원에게 알림을 보냈어요.' : value === 'rejected' ? '신청을 반려했습니다.' : '신청을 취소했습니다. 포인트가 복원되었어요.');
       break;
     }
     case 'bulk': {
@@ -312,7 +378,8 @@ async function onAction(event) {
         break;
       }
       const done = await act('bulkReview', { ids, status: 'complete' });
-      refresh(`${done}건을 승인했습니다.`);
+      const held = state.transactions.filter(row => ids.includes(row.id) && row.status === 'pending' && row.partnerApproved).length;
+      refresh(held && viewer.role === 'partner' ? `${done}건을 승인했습니다. 이 중 ${held}건은 고액·한도 초과로 운영팀 2차 승인 후 적립됩니다.` : `${done}건을 승인했습니다.`);
       break;
     }
     case 'attend': {
@@ -331,6 +398,7 @@ async function onAction(event) {
     case 'coupon-unused': await act('setCouponUsed', { id, used: false }); refresh('사용 가능 쿠폰으로 되돌렸어요.'); break;
     case 'barcode': {
       const row = state.transactions.find(item => item.id === id);
+      if (!row?.coupon?.code) break;
       dialog(escape(state.products.find(p => p.id === row.product)?.name ?? '쿠폰'), `<div class="barcode-large">${barcode(row.coupon.code)}<code>${row.coupon.code.replace(/(\d{4})(?=\d)/g, '$1 ')}</code></div><p class="muted small center">매장 직원에게 바코드를 보여 주세요. 유효기간 ~ ${showDate(row.coupon.expires)}</p>`, 'narrow');
       break;
     }
@@ -347,12 +415,18 @@ async function onAction(event) {
     case 'regen-key':
       dialog('API 키 재발급', `<p>재발급하면 <b>기존 키는 즉시 폐기</b>되어 연동 서버에서 오류가 날 수 있습니다. 계속할까요?</p><div class="dialog-actions"><button class="btn danger" type="button" data-action="regen-confirm">재발급</button><button class="btn outline" type="button" data-action="close">취소</button></div>`, 'narrow');
       break;
-    case 'regen-confirm': await act('regenerateKey'); ui.reveal = '1'; refresh('새 API 키를 발급했습니다. 연동 서버에 반영해 주세요.'); break;
+    case 'regen-confirm': await act('regenerateKey'); ui.reveal = '1'; refresh('새 API 키를 발급했습니다. 연동 서버에 반영해 주세요. 웹훅 서명 키도 함께 바뀝니다.'); break;
     case 'reset-demo':
       dialog('데모 데이터 초기화', '<p>모든 회원·거래·설정을 처음 상태로 되돌립니다. 계속할까요?</p><div class="dialog-actions"><button class="btn danger" type="button" data-action="reset-confirm">초기화</button><button class="btn outline" type="button" data-action="close">취소</button></div>', 'narrow');
       break;
-    case 'reset-confirm': await act('resetDemo'); refresh('데모 데이터를 초기화했습니다.'); break;
-    case 'csv': downloadCsv(trigger.closest('[data-csv]') ?? trigger.closest('.dash-content')?.querySelector('[data-csv]'), name ?? '내보내기'); break;
+    case 'reset-confirm': await act('resetDemo'); ui = {}; refresh('데모 데이터를 초기화했습니다.'); break;
+    case 'csv': {
+      // 목록이 '더 보기'로 나뉘어 있으면 전체를 그린 뒤 내보낸다.
+      let button = trigger;
+      if (document.querySelector('[data-more]')) { ui.more = 'all'; render(true); button = document.querySelector(`[data-action="csv"][data-name="${CSS.escape(name ?? '')}"]`) ?? trigger; }
+      downloadCsv(button.closest('[data-csv]') ?? button.closest('.dash-content')?.querySelector('[data-csv]') ?? document.querySelector('[data-csv]'), name ?? '내보내기');
+      break;
+    }
     case 'policy': dialog(value === 'privacy' ? '개인정보처리방침' : '이용약관', `<div class="legal-dialog">${legalBody(value)}</div>`, 'wide'); break;
     case 'coupon-cancel':
       dialog('쿠폰 취소', `<p>쿠폰을 취소하고 사용한 포인트를 돌려받을까요? 취소한 쿠폰은 다시 사용할 수 없습니다.</p><div class="dialog-actions"><button class="btn danger" type="button" data-action="coupon-cancel-confirm" data-id="${id}">취소하고 환불받기</button><button class="btn outline" type="button" data-action="close">닫기</button></div>`, 'narrow');
@@ -388,7 +462,16 @@ document.addEventListener('click', event => {
   if (skip) { event.preventDefault(); const main = document.getElementById('main'); main?.setAttribute('tabindex', '-1'); main?.focus(); return; }
   // 메뉴 링크를 누르거나 메뉴 바깥을 누르면 닫는다.
   if (document.body.classList.contains('menu-open') && (event.target.closest('#site-menu a, #dash-menu a') || !event.target.closest('#site-menu, #dash-menu, [data-action="site-menu"], [data-action="dash-menu"]'))) closeMenus();
-  onAction(event).catch(error => notify(error.message, 'error'));
+  // 처리 중인 버튼은 다시 눌리지 않게 잠근다 (중복 요청 방지).
+  const trigger = event.target.closest('[data-action]');
+  if (trigger?.dataset.busy) return;
+  const task = onAction(event);
+  if (trigger && trigger.isConnected && !['close', 'ui', 'site-menu', 'dash-menu', 'slide', 'prev', 'next', 'category', 'qty', 'fill', 'template', 'toggle-password'].includes(trigger.dataset.action)) {
+    trigger.dataset.busy = '1';
+    trigger.setAttribute('aria-busy', 'true');
+    task.finally(() => { delete trigger.dataset.busy; trigger.removeAttribute('aria-busy'); });
+  }
+  task.catch(error => notify(error.message, 'error'));
 });
 
 // ───────── 입력 ─────────
@@ -441,16 +524,56 @@ document.addEventListener('submit', async event => {
   const kind = form.dataset.form;
   if (!kind) return;
   event.preventDefault();
+  // 제출 중에는 같은 폼을 다시 보내지 않는다 (더블클릭·엔터 연타로 인한 중복 처리 방지).
+  if (form.dataset.busy) return;
+  form.dataset.busy = '1';
+  const submits = [...form.querySelectorAll('button[type=submit], button:not([type])')];
+  for (const button of submits) button.disabled = true;
+  try { await submitForm(form, kind); }
+  finally {
+    delete form.dataset.busy;
+    for (const button of submits) button.disabled = false;
+  }
+});
+
+async function submitForm(form, kind) {
   const data = Object.fromEntries(new FormData(form));
   const checked = name => form.elements[name]?.checked ?? false;
   const viewer = me();
   const amount = Number(data.amount);
   try {
     switch (kind) {
-      case 'login': { const account = await act('login', { email: data.email, password: data.password, remember: checked('remember') }); afterLogin(account, `${account.name}님, 환영합니다!`); break; }
+      case 'login': {
+        try {
+          const account = await act('login', { email: data.email, password: data.password, otp: data.otp ?? '', remember: checked('remember') });
+          afterLogin(account, `${account.name}님, 환영합니다!`);
+        } catch (error) {
+          const box = form.querySelector('[data-otp]');
+          if (error.need === 'otp' && box) {
+            const first = box.hidden;
+            box.hidden = false;
+            box.querySelector('input').focus();
+            if (first && !data.otp) { notify('2단계 인증 코드를 입력해 주세요.'); break; }
+          }
+          throw error;
+        }
+        break;
+      }
       case 'signup': {
         const account = await act('signup', { ...data, terms: checked('terms'), privacy: checked('privacy'), age: checked('age'), marketing: checked('marketing') });
-        afterLogin(account, `가입을 축하해요! ${format(state.settings.signupBonus)} P를 드렸어요. 🎉`);
+        const bonus = state.settings.signupBonus + (data.referral ? state.settings.referralBonus : 0);
+        afterLogin(account, bonus ? `가입을 축하해요! 첫 포인트 교환을 마치면 ${format(bonus)} P를 드려요. 🎉` : '가입을 축하해요! 🎉');
+        break;
+      }
+      case 'social-demo': {
+        const provider = form.dataset.id;
+        const account = await act('socialDemo', { provider, terms: checked('terms'), privacy: checked('privacy'), age: checked('age'), marketing: checked('marketing') });
+        afterLogin(account, `${providers[provider].name} 계정으로 로그인했습니다.`);
+        break;
+      }
+      case 'social-terms': {
+        const account = await act('socialComplete', { token: form.dataset.token, terms: checked('terms'), privacy: checked('privacy'), age: checked('age'), marketing: checked('marketing') });
+        afterLogin(account, '가입을 환영합니다! 🎉');
         break;
       }
       case 'find': {
@@ -469,9 +592,14 @@ document.addEventListener('submit', async event => {
       case 'settle': { const r = await act('confirmSettlement', { date: form.dataset.date, count: Number(data.count), amount: Number(data.amount) }); refresh(r.status === 'match' ? '스마일 포인트 집계와 일치합니다.' : `집계와 ${format(Math.abs(r.diff))} P 차이가 있어 운영팀에 알렸습니다.`, r.status === 'match' ? '' : 'error'); break; }
       case 'event-create': await act('createEvent', { ...data, firstOnly: checked('firstOnly') }); refresh('이벤트를 등록했습니다.'); break;
       case 'exchange': await act('exchange', { partnerId: form.dataset.id, amount }); refresh('교환을 신청했습니다. 승인되면 알림으로 알려 드릴게요.'); break;
-      case 'link': { const link = await act('linkPartner', { partnerId: form.dataset.id, loginId: data.loginId }); refresh(`연결 완료! 교환 가능 ${format(link.balance)} P를 불러왔어요.`); break; }
+      case 'link': { const sent = await act('linkPartner', { partnerId: form.dataset.id, loginId: data.loginId }); refresh(); linkVerifyDialog(form.dataset.id, sent?.code ?? ''); notify('인증번호를 보냈습니다. 웹하드에서 확인해 주세요.'); break; }
+      case 'link-confirm': { const link = await act('confirmLink', { partnerId: form.dataset.id, code: data.code }); refresh(link.balance === null ? '연결 완료! 교환 가능 포인트는 제휴사 승인 시 확인합니다.' : `연결 완료! 교환 가능 ${format(link.balance)} P를 불러왔어요.`); break; }
       case 'withdrawal': await act('withdraw', { amount }); refresh('출금을 신청했습니다. 승인 후 다음 영업일에 입금됩니다.'); break;
-      case 'bank': await act('setBank', data); delete ui.bankEdit; refresh('계좌 인증이 완료되었습니다.'); break;
+      case 'bank': { const sent = await act('setBank', data); delete ui.bankEdit; refresh(sent?.code ? `데모: 1원 입금자명은 '스마일${sent.code}'입니다. 숫자 4자리를 입력하세요.` : '1원을 보냈습니다. 입금자명의 숫자 4자리를 입력해 주세요.'); break; }
+      case 'bank-confirm': await act('confirmBank', { code: data.code }); refresh('계좌 인증이 완료되었습니다.'); break;
+      case 'totp-enable': await act('enableTotp', { code: data.code }); refresh('2단계 인증을 켰습니다. 다음 로그인부터 코드를 입력합니다.'); break;
+      case 'totp-disable': await act('disableTotp', { code: data.code }); refresh('2단계 인증을 껐습니다.'); break;
+      case 'delete-account': { const done = await act('deleteAccount', { password: data.password, confirm: data.confirm }); ui = {}; go('#home'); notify(done?.left ? `탈퇴가 완료되었습니다. 남은 ${format(done.left)} P는 소멸되었습니다.` : '탈퇴가 완료되었습니다. 그동안 이용해 주셔서 감사합니다.'); break; }
       case 'purchase': { const rows = await act('order', { productId: form.dataset.id, quantity: Number(data.qty) }); go('#app/user/coupons'); notify(`쿠폰 ${rows.length}장을 발급했어요. 쿠폰함에서 확인하세요.`); break; }
       case 'gift': await act('gift', { email: data.email, amount, message: data.message }); form.reset(); refresh(`${format(amount)} P를 선물했어요. 🎁`); break;
       case 'ticket': await act('openTicket', data); refresh('문의를 등록했습니다. 답변이 등록되면 알려 드릴게요.'); break;
@@ -480,7 +608,7 @@ document.addEventListener('submit', async event => {
       case 'notify': await act('updateProfile', { notify: { email: checked('email'), sms: checked('sms'), marketing: checked('marketing') } }); notify('알림 설정을 저장했습니다.'); break;
       case 'password': await act('changePassword', { before: data.before, after: data.after }); form.reset(); notify('비밀번호를 변경했습니다.'); break;
       case 'adjust': await act('adjust', { userId: form.dataset.id, amount, reason: data.reason }); refresh('포인트를 조정했습니다.'); break;
-      case 'partner': await act('updatePartner', { partnerId: form.dataset.id, divisor: Number(data.divisor), min: Number(data.min), active: checked('active') }); refresh('제휴사 정책을 저장했습니다.'); break;
+      case 'partner': await act('updatePartner', { partnerId: form.dataset.id, divisor: Number(data.divisor), min: Number(data.min), dailyLimit: Number(data.dailyLimit), reviewOver: Number(data.reviewOver), active: checked('active') }); refresh('제휴사 정책을 저장했습니다.'); break;
       case 'product-edit': await act('updateProduct', { productId: form.dataset.id, cost: Number(data.cost), stock: Number(data.stock), active: checked('active') }); refresh('상품을 저장했습니다.'); break;
       case 'settings': await act('updateSettings', { ...data, maintenance: checked('maintenance') }); refresh('운영 설정을 저장했습니다.'); break;
       case 'announce': await act('addAnnouncement', { title: data.title, body: data.body, pinned: checked('pinned') }); refresh('공지를 등록했습니다.'); break;
@@ -491,7 +619,7 @@ document.addEventListener('submit', async event => {
       case 'bulk-reject': { const done = await act('bulkReview', { ids: form.dataset.ids.split(','), status: 'rejected', reason: data.reason }); refresh(`${done}건을 반려했습니다.`); break; }
     }
   } catch (error) { notify(error.message, 'error'); }
-});
+}
 
 async function profilePhoto(file) {
   if (!['image/jpeg', 'image/png', 'image/webp'].includes(file.type) || file.size > 8 * 1024 * 1024) throw new Error('8MB 이하의 JPG, PNG 또는 WebP 사진을 선택해 주세요.');

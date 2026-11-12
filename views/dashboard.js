@@ -1,8 +1,8 @@
 import { escape, icon, roles } from '../catalog.js';
-import { notificationsFor } from '../state.js';
+import { linkRequests, notificationsFor } from '../state.js';
 import { adminDescriptions, adminMenu, adminPage } from './admin.js';
 import { partnerDescriptions, partnerMenu, partnerPage } from './partner.js';
-import { avatar, brand } from './ui.js';
+import { avatar, brand, setPaging } from './ui.js';
 import { profilePage, supportPage, userDescriptions, userMenu, userPage } from './user.js';
 
 export const menus = { user: userMenu, partner: partnerMenu, admin: adminMenu };
@@ -12,10 +12,10 @@ export const pageTitle = (role, page) => pages(role).find(([id]) => id === page)
 
 function badges(state, me) {
   const pending = state.transactions.filter(row => row.status === 'pending');
-  if (me.role === 'admin') return { requests: pending.filter(r => r.type === 'exchange').length, payouts: pending.filter(r => r.type === 'withdrawal').length, support: state.tickets.filter(t => t.status === 'open').length };
-  if (me.role === 'partner') return { requests: pending.filter(r => r.type === 'exchange' && r.partner === me.partnerId).length };
+  if (me.role === 'admin') return { requests: pending.filter(r => r.type === 'exchange').length, payouts: pending.filter(r => r.type === 'withdrawal').length, support: state.tickets.filter(t => t.status === 'open').length, members: state.accounts.filter(a => a.bankRequest).length };
+  if (me.role === 'partner') return { requests: pending.filter(r => r.type === 'exchange' && r.partner === me.partnerId && !r.partnerApproved).length + (state.linkRequests ?? linkRequests(state, me.partnerId)).length };
   const now = new Date().toISOString();
-  return { coupons: state.transactions.filter(r => r.userId === me.id && r.type === 'coupon' && !r.coupon?.used && r.coupon?.expires > now).length, support: state.tickets.filter(t => t.userId === me.id && t.status === 'answered' && !t.seen).length };
+  return { coupons: state.transactions.filter(r => r.userId === me.id && r.type === 'coupon' && r.status === 'complete' && !r.coupon?.used && r.coupon?.expires > now).length, support: state.tickets.filter(t => t.userId === me.id && t.status === 'answered' && !t.seen).length };
 }
 
 export function dashboard(state, me, page, ui) {
@@ -23,11 +23,12 @@ export function dashboard(state, me, page, ui) {
   const count = badges(state, me);
   const unread = notificationsFor(state, me).filter(item => !item.read).length;
   const partner = role === 'partner' ? state.partners.find(p => p.id === me.partnerId) : null;
+  setPaging(ui);
   const body = role === 'user' ? userPage(state, me, page, ui)
     : role === 'partner' ? partnerPage(state, me, page, ui, profilePage)
     : adminPage(state, me, page, ui, { profilePage, supportPage });
   return `<div class="dash dash-${role}">
-    <aside class="sidebar" id="dash-menu"><div class="sidebar-top">${brand()}<span class="role-label">${icon(roles[role].icon, 15)} ${roles[role].name}${partner ? ' · ' + partner.name : ''}</span></div>
+    <aside class="sidebar" id="dash-menu"><div class="sidebar-top">${brand()}<span class="role-label">${icon(roles[role].icon, 15)} ${roles[role].name}${partner ? ' · ' + escape(partner.name) : ''}</span></div>
       <nav aria-label="대시보드 메뉴">${menus[role].map(([group, items]) => `<p class="nav-group">${group}</p>${items.map(([id, glyph, label]) => `<a href="#app/${role}/${id}" ${id === page ? 'aria-current="page"' : ''}>${icon(glyph, 19)}<span>${label}</span>${count[id] ? `<b class="badge">${count[id]}</b>` : ''}</a>`).join('')}`).join('')}</nav>
       <div class="side-foot"><a href="#home" class="home-link">${icon('external', 19)} 메인으로</a>
         <a class="side-profile" href="#app/${role}/profile" ${page === 'profile' ? 'aria-current="page"' : ''}>${avatar(me, 'sm')}<span><strong>${escape(me.name)}</strong><small>${escape(me.email)}</small></span>${icon('chevron', 15)}</a></div>
@@ -42,7 +43,7 @@ export function dashboard(state, me, page, ui) {
         <button type="button" class="icon-btn" data-action="logout" aria-label="로그아웃" title="로그아웃">${icon('logout', 20)}</button>
       </div>
     </header><main id="main" class="dash-content">
-      ${state.settings?.maintenance ? `<div class="notice-bar warn">${icon('alert', 18)}<span><b>서비스 점검 중</b> ${role === 'user' ? '교환·출금·구매·선물·출석은 점검이 끝난 뒤 이용할 수 있습니다.' : role === 'admin' ? '사용자의 거래 기능이 막혀 있습니다. 운영 설정에서 점검 모드를 끌 수 있습니다.' : '사용자의 신규 교환 신청이 일시 중지되었습니다.'}</span></div>` : ''}
+      ${state.settings?.maintenance ? `<div class="notice-bar warn">${icon('alert', 18)}<span><b>서비스 점검 중</b> ${role === 'user' ? '교환·출금·구매·선물·출석·계좌 등록은 점검이 끝난 뒤 이용할 수 있습니다.' : role === 'admin' ? '사용자의 거래 기능이 막혀 있습니다. 운영 설정에서 점검 모드를 끌 수 있습니다.' : '사용자의 신규 교환 신청이 일시 중지되었습니다.'}</span></div>` : ''}
       ${page === 'overview' ? '' : `<div class="dash-title"><h1>${pageTitle(role, page)}</h1><p>${descriptions[role][page] ?? ''}</p></div>`}
       ${body}
     </main></div>
