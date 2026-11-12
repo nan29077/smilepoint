@@ -4,7 +4,7 @@ import * as S from './state.js';
 import { memberDetail, partnerForm, productForm } from './views/admin.js';
 import { dashboard, pages, pageTitle } from './views/dashboard.js';
 import { legalBody } from './views/legal.js';
-import { hero, landing, legalPage, login, resetPage, signup, slides, socialAvailable, socialTermsPage, termsFields } from './views/site.js';
+import { hero, landing, legalPage, login, resetPage, signup, slides, socialAvailable, socialTermsPage, termsFields } from './views/site.js?v=5320af4';
 import { barcode, details, filteredProducts, money, productVisual, showDate } from './views/ui.js';
 import { notificationList } from './views/user.js';
 
