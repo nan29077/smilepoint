@@ -1,19 +1,22 @@
 import { escape, format, icon } from '../catalog.js';
-import { account, kstDay, linkRequests, series, settlementStatus, visibleTransactions } from '../state.js';
+import { account, kstDay, linkRequests, monthly, series, settlementStatus, visibleTransactions } from '../state.js';
 import { activityFilters, applyFilters } from './user.js';
 import { action, ago, avatar, barChart, blank, button, donut, metric, money, panel, pill, showTime, table, trend } from './ui.js';
 
 export const partnerMenu = [
-  ['업무', [['overview', 'home', '자사 개요'], ['requests', 'exchange', '교환 요청'], ['activity', 'file', '거래 내역']]],
-  ['정산·연동', [['settlement', 'chart', '정산 및 대사'], ['integration', 'key', 'API · 연동'], ['policy', 'settings', '교환 정책']]],
+  ['업무', [['overview', 'home', '자사 개요'], ['requests', 'exchange', '교환 요청'], ['activity', 'file', '거래 내역'], ['members', 'users', '회원 현황']]],
+  ['정산·분석', [['settlement', 'chart', '정산 및 대사'], ['report', 'activity', '통계 리포트']]],
+  ['연동·정책', [['integration', 'key', 'API · 연동'], ['policy', 'settings', '교환 정책']]],
 ];
 export const partnerDescriptions = {
   requests: '자사 회원의 교환 신청을 확인하고 승인 또는 반려하세요. 여러 건을 한 번에 처리할 수 있습니다.',
   activity: '자사 교환 거래 전체를 기간·상태별로 조회하세요.',
+  members: '자사 포인트를 교환한 회원별 신청·승인 현황을 확인하세요.',
+  report: '월별 교환 추이, 승인율, 요일·시간대별 신청 분포를 확인하세요.',
   settlement: '일자별 교환 완료 내역과 정산 예정 금액을 대사하세요.',
   integration: 'API 키, 웹훅, 허용 IP와 최근 API 호출 기록을 관리하세요.',
   policy: '현재 적용 중인 교환 비율과 신청 조건을 확인하세요.',
-  profile: '담당자 정보와 프로필 캐릭터를 관리하세요.',
+  profile: '담당자 정보와 프로필 사진을 관리하세요.',
 };
 
 const elapsed = rows => {
@@ -23,10 +26,10 @@ const elapsed = rows => {
   return minutes < 60 ? Math.round(minutes) + '분' : (minutes / 60).toFixed(1) + '시간';
 };
 
-export function pendingQueue(state, viewer, rows, { showUser = true } = {}) {
+export function pendingQueue(state, viewer, rows, { showUser = true, approve = '선택 승인' } = {}) {
   const pending = rows.filter(row => row.status === 'pending');
   return `<section class="panel" data-bulk><div class="panel-head"><h2>처리 대기 ${pill(pending.length + '건', 'pending')}</h2>
-      ${pending.length ? `<div class="bulk-actions"><span class="muted small" data-selected-count>0건 선택</span>${action('선택 승인', 'bulk', 'data-value="complete"', 'btn primary sm', 'check')}${action('선택 반려', 'bulk', 'data-value="rejected"', 'btn outline sm', 'close')}</div>` : ''}</div>
+      ${pending.length ? `<div class="bulk-actions"><span class="muted small" data-selected-count>0건 선택</span>${action(approve, 'bulk', 'data-value="complete"', 'btn primary sm', 'check')}${action('선택 반려', 'bulk', 'data-value="rejected"', 'btn outline sm', 'close')}</div>` : ''}</div>
       ${table(state, pending, viewer, { select: true, showUser, empty: '처리할 신청이 없습니다. 👏' })}</section>`;
 }
 
@@ -137,6 +140,60 @@ function policy(state, partner) {
     <section class="panel"><h2>교환 예시</h2><ul class="fee-list">${[10000, 50000, 100000].map(v => `<li><span>${format(v)} P 교환</span><b>${format(Math.floor(v / partner.divisor))} 스마일 P</b></li>`).join('')}</ul></section></div>`;
 }
 
+function memberStats(rows) {
+  const map = new Map();
+  for (const row of rows) {
+    const item = map.get(row.userId) ?? { userId: row.userId, member: row.member ?? '', count: 0, done: 0, rejected: 0, pending: 0, source: 0, first: row.date, last: row.date };
+    item.count++;
+    if (row.status === 'complete') { item.done++; item.source += row.source; }
+    if (row.status === 'rejected') item.rejected++;
+    if (row.status === 'pending') item.pending++;
+    if (row.date > item.last) item.last = row.date;
+    if (row.date < item.first) item.first = row.date;
+    if (!item.member && row.member) item.member = row.member;
+    map.set(row.userId, item);
+  }
+  return [...map.values()].sort((a, b) => b.source - a.source || b.last.localeCompare(a.last));
+}
+
+function membersPage(state, me, ui) {
+  const all = memberStats(visibleTransactions(state, me));
+  const q = (ui.q ?? '').trim().toLowerCase();
+  const list = all.filter(item => !q || ((account(state, item.userId)?.name ?? '') + item.member).toLowerCase().includes(q));
+  const month = kstDay().slice(0, 7);
+  const total = all.reduce((sum, item) => sum + item.source, 0);
+  return `<div class="summary-strip"><div><span>교환 회원</span><strong>${all.length}명</strong></div><div><span>이번 달 신규</span><strong>${all.filter(item => kstDay(item.first).startsWith(month)).length}명</strong></div><div><span>재교환 회원</span><strong>${all.filter(item => item.count > 1).length}명</strong></div><div><span>회원당 평균 차감</span><strong>${format(all.length ? Math.round(total / all.length) : 0)} P</strong></div></div>
+    <div class="filters"><label class="search-field">${icon('search', 18)}<span class="sr-only">회원 검색</span><input type="search" data-ui="q" value="${escape(ui.q ?? '')}" placeholder="회원 이름, 웹하드 아이디"></label>${action('CSV', 'csv', 'data-name="교환회원"', 'btn outline sm', 'download')}</div>
+    <section class="panel" data-csv>${list.length ? `<div class="table-scroll"><table><thead><tr><th>회원</th><th>웹하드 아이디</th><th class="numeric">신청</th><th class="numeric">승인</th><th class="numeric">반려</th><th class="numeric">누적 차감</th><th>최근 신청</th></tr></thead>
+      <tbody>${list.map(item => { const a = account(state, item.userId); return `<tr><td><div class="cell-user">${a ? avatar(a, 'sm') : ''}<span><strong>${escape(a?.name ?? '탈퇴 회원')}</strong>${item.pending ? `<small>대기 ${item.pending}건</small>` : ''}</span></div></td><td><code>${escape(item.member || '—')}</code></td><td class="numeric">${item.count}</td><td class="numeric">${item.done}</td><td class="numeric ${item.rejected ? 'minus' : ''}">${item.rejected}</td><td class="numeric">${format(item.source)} P</td><td>${showTime(item.last)}</td></tr>`; }).join('')}</tbody></table></div>` : blank('조건에 맞는 회원이 없습니다.', 'users')}</section>`;
+}
+
+const kst = value => new Date(Date.parse(value) + 9 * 3600000);
+function reportPage(state, me, partner) {
+  const rows = visibleTransactions(state, me);
+  const done = rows.filter(row => row.status === 'complete');
+  const rejected = rows.filter(row => row.status === 'rejected').length;
+  const decided = done.length + rejected;
+  const byMonth = monthly(done, 6, row => row.source);
+  const countMonth = monthly(rows, 6, () => 1);
+  const days = ['일', '월', '화', '수', '목', '금', '토'].map((label, i) => ({ label, value: rows.filter(row => kst(row.date).getUTCDay() === i).length }));
+  const slots = [['새벽 (0~6시)', 0], ['오전 (6~12시)', 6], ['오후 (12~18시)', 12], ['저녁 (18~24시)', 18]].map(([label, from]) => [label, rows.filter(row => { const h = kst(row.date).getUTCHours(); return h >= from && h < from + 6; }).length]);
+  const busiest = Math.max(1, ...slots.map(([, count]) => count));
+  const top = memberStats(rows).slice(0, 5);
+  return `<div class="summary-strip"><div><span>누적 신청</span><strong>${rows.length}건</strong></div><div><span>승인율</span><strong>${decided ? Math.round(done.length / decided * 100) : 0}%</strong></div><div><span>평균 처리 시간</span><strong>${elapsed(rows)}</strong></div><div><span>누적 차감 포인트</span><strong>${format(done.reduce((s, r) => s + r.source, 0))} P</strong></div><div><span>누적 정산 금액</span><strong>${format(done.reduce((s, r) => s + r.points, 0))}원</strong></div></div>
+    <div class="dash-grid two-one">
+      ${panel('월별 승인 포인트 (최근 6개월)', barChart(byMonth, { tone: 'blue' }))}
+      ${panel('요일별 신청 건수', barChart(days, { unit: '건', height: 150 }))}
+    </div>
+    <div class="dash-grid two-one">
+      <section class="panel" data-csv><div class="panel-head"><h2>월별 집계</h2>${action('CSV', 'csv', 'data-name="월별집계"', 'btn outline sm', 'download')}</div><div class="table-scroll"><table><thead><tr><th>월</th><th class="numeric">신청 건</th><th class="numeric">승인 차감 포인트</th><th class="numeric">정산 금액(원)</th></tr></thead><tbody>${byMonth.map((m, i) => `<tr><td>${m.key}</td><td class="numeric">${countMonth[i].value}</td><td class="numeric">${format(m.value)}</td><td class="numeric">${format(Math.floor(m.value / partner.divisor))}</td></tr>`).reverse().join('')}</tbody></table></div></section>
+      <div class="side-stack">
+        <section class="panel"><h2>시간대별 신청</h2><ul class="bar-list">${slots.map(([label, count]) => `<li><span>${label}</span><i><b style="width:${count / busiest * 100}%"></b></i><strong>${count}건</strong></li>`).join('')}</ul></section>
+        ${panel('교환 상위 회원', top.length ? `<ul class="link-list">${top.map(item => { const a = account(state, item.userId); return `<li>${a ? avatar(a, 'sm') : ''}<div><strong>${escape(a?.name ?? '탈퇴 회원')}</strong><small>${escape(item.member)} · ${item.done}건</small></div><b>${format(item.source)} P</b></li>`; }).join('')}</ul>` : blank('교환 내역이 없습니다.'), button('회원 현황', '#app/partner/members', 'text-btn', 'chevron'))}
+      </div>
+    </div>`;
+}
+
 export function partnerPage(state, me, page, ui, profilePage) {
   const partner = state.partners.find(item => item.id === me.partnerId);
   const rows = visibleTransactions(state, me);
@@ -144,6 +201,8 @@ export function partnerPage(state, me, page, ui, profilePage) {
     case 'overview': return overview(state, me, partner);
     case 'requests': return `${linkPanel(state, me.partnerId)}${pendingQueue(state, me, rows)}${panel('처리 내역', table(state, rows.filter(row => row.status !== 'pending'), me, { showUser: true, showUpdate: true }))}`;
     case 'activity': return `${activityFilters(ui, ['exchange'])}<section class="panel" data-csv>${table(state, applyFilters(state, rows, ui), me, { showUser: true, showUpdate: true })}</section>`;
+    case 'members': return membersPage(state, me, ui);
+    case 'report': return reportPage(state, me, partner);
     case 'settlement': return `<div class="tabs">${[7, 14, 30].map(d => `<button type="button" class="tab ${(Number(ui.days) || 14) === d ? 'active' : ''}" data-action="ui" data-key="days" data-value="${d}">최근 ${d}일</button>`).join('')}</div>${settlementTable(state, [partner], Number(ui.days) || 14, { canConfirm: true })}`;
     case 'integration': return integration(state, me, partner, ui);
     case 'policy': return policy(state, partner);

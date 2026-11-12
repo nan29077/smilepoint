@@ -1,11 +1,13 @@
-import { animals, announcementSeeds, banks, grades, partnerSeeds, productSeeds, testPassword, ticketCategories } from './catalog.js';
+import { animals, announcementSeeds, bankCodes, banks, grades, partnerSeeds, productSeeds, testPassword, ticketCategories } from './catalog.js';
 
 export const storageKey = 'smilepoint-demo-v2';
 export const types = {
   exchange: '포인트 교환', withdrawal: '계좌 출금', coupon: '쿠폰 구매', attendance: '출석체크',
   reward: '이벤트 적립', adjust: '관리자 조정', gift_out: '포인트 선물', gift_in: '선물 받음', reversal: '교환 회수',
 };
-export const statuses = { pending: '처리 대기', complete: '완료', rejected: '반려', canceled: '취소' };
+export const statuses = { pending: '처리 대기', processing: '이체 중', complete: '완료', rejected: '반려', canceled: '취소' };
+// 출금의 지급대행 이체 단계 (row.payout.status)
+export const payoutLabels = { queued: '이체 요청 대기', sent: '이체 처리 중', paid: '입금 완료', failed: '이체 실패' };
 const credits = new Set(['exchange', 'attendance', 'reward', 'gift_in']);
 const day = 86400000;
 
@@ -73,7 +75,7 @@ export function freshState(now = new Date()) {
   ];
   const state = {
     version: 2, seq: 1023,
-    settings: { fee: 500, withdrawalMinimum: 5000, dailyWithdrawLimit: 500000, attendancePoints: 10, attendanceBonus: 50, signupBonus: 1000, referralBonus: 500, giftMinimum: 1000, dailyGiftLimit: 100000, maintenance: false, mockWebhardBalance: true },
+    settings: { fee: 500, withdrawalMinimum: 5000, dailyWithdrawLimit: 500000, attendancePoints: 10, attendanceBonus: 50, signupBonus: 1000, referralBonus: 500, giftMinimum: 1000, dailyGiftLimit: 100000, maintenance: false, mockWebhardBalance: true, payoutMode: 'api', payoutAutoLimit: 0 },
     session: null,
     partners: partnerSeeds.map((item, i) => ({ ...item, apiKey: newApiKey(), webhook: `https://api.${item.id}.example.com/smilepoint/webhook`, ip: `203.0.113.${10 + i}`, dailyLimit: 1000000, reviewOver: 100000 })),
     products: productSeeds.map(item => ({ ...item })),
@@ -101,7 +103,6 @@ export function freshState(now = new Date()) {
     account.avatar = Math.floor(random() * animals.length);
     account.photo = '';
   }
-  state.accounts.find(item => item.id === 'u1').avatar = 0;
 
   const push = row => { state.transactions.push({ id: nextId(state), ...row }); return row; };
   // 대표 사용자 내역
@@ -174,7 +175,7 @@ export function freshState(now = new Date()) {
 export function productionState({ adminEmail, adminName = '서비스 운영자', passwordHash }) {
   const fresh = freshState();
   return {
-    version: 2, seq: 1000, settings: { ...fresh.settings, mockWebhardBalance: false }, session: null,
+    version: 2, seq: 1000, settings: { ...fresh.settings, mockWebhardBalance: false, payoutMode: 'manual' }, session: null,
     partners: [], products: [], announcements: [], events: [],
     accounts: [{ id: 'a1', role: 'admin', name: adminName, email: adminEmail, phone: '', provider: 'email', status: 'active', createdAt: new Date().toISOString(), password: passwordHash, avatar: 0, photo: '' }],
     transactions: [], tickets: [], notifications: [], audit: [], attendance: {}, apiLogs: [], webhooks: [], webhardBalances: {}, resets: [], settlements: {},
@@ -324,10 +325,10 @@ export function balances(state, userId) {
     if (direction(row) === 'in') {
       if (row.status === 'complete') { totals.available += amount; totals.earned += amount; }
       if (row.status === 'pending') totals.pending += amount;
-    } else if (row.status === 'pending' || row.status === 'complete') {
+    } else if (row.status === 'pending' || row.status === 'processing' || row.status === 'complete') {
       totals.available -= amount;
-      if (row.status === 'pending') totals.reserved += amount;
-      else totals.spent += amount;
+      if (row.status === 'complete') totals.spent += amount;
+      else totals.reserved += amount; // 심사 대기·이체 중
     }
   }
   return totals;
@@ -472,7 +473,7 @@ export function setBank(state, userId, { bank, number, holder }) {
   if (!banks.includes(bank)) fail('은행을 목록에서 선택해 주세요.');
   if (digits.length < 10 || digits.length > 16) fail('계좌번호는 숫자 10~16자리로 입력해 주세요.');
   if (String(holder ?? '').trim() !== target.name) fail(`예금주가 회원 이름(${target.name})과 일치해야 합니다.`);
-  if (state.transactions.some(row => row.userId === userId && row.type === 'withdrawal' && row.status === 'pending')) fail('처리 중인 출금이 있어 계좌를 바꿀 수 없습니다.');
+  if (state.transactions.some(row => row.userId === userId && row.type === 'withdrawal' && ['pending', 'processing'].includes(row.status))) fail('처리 중인 출금이 있어 계좌를 바꿀 수 없습니다.');
   if (state.accounts.some(item => item.id !== userId && item.bank?.bank === bank && item.bank?.number === digits)) fail('다른 계정에 등록된 계좌입니다. 고객센터로 문의해 주세요.');
   const today = kstDay();
   const tries = (target.bankTries ?? []).filter(day => day === today);
@@ -521,7 +522,7 @@ export function payoutAccount(state, adminId, id) {
 }
 export function withdrawnToday(state, userId) {
   const today = kstDay();
-  return state.transactions.filter(row => row.userId === userId && row.type === 'withdrawal' && ['pending', 'complete'].includes(row.status) && kstDay(row.date) === today).reduce((sum, row) => sum + row.points, 0);
+  return state.transactions.filter(row => row.userId === userId && row.type === 'withdrawal' && ['pending', 'processing', 'complete'].includes(row.status) && kstDay(row.date) === today).reduce((sum, row) => sum + row.points, 0);
 }
 export function withdraw(state, userId, amount) {
   const target = user(state, userId);
@@ -531,8 +532,105 @@ export function withdraw(state, userId, amount) {
   if (!(amount >= state.settings.withdrawalMinimum) || amount > balances(state, userId).available || amount <= fee) fail('최소 출금액과 사용 가능 잔액을 확인해 주세요.');
   if (withdrawnToday(state, userId) + amount > state.settings.dailyWithdrawLimit) fail('일일 출금 한도를 초과했습니다.');
   const row = record(state, { userId, type: 'withdrawal', points: amount, fee, status: 'pending', bank: target.bank.bank + ' ••••' + target.bank.number.slice(-4) });
-  notify(state, 'admin', `${target.name}님 출금 신청 ${amount.toLocaleString('ko-KR')} P`, 'app/admin/payouts');
+  // 지급대행 연동 + 자동 승인 한도 이내면 심사 없이 바로 이체를 요청한다.
+  const auto = state.settings.payoutMode === 'api' && state.settings.payoutAutoLimit > 0 && amount <= state.settings.payoutAutoLimit;
+  if (auto) startPayout(row, 'auto');
+  notify(state, 'admin', `${target.name}님 출금 신청 ${amount.toLocaleString('ko-KR')} P${auto ? ' (자동 승인 · 이체 요청)' : ''}`, 'app/admin/payouts');
   return row;
+}
+
+// ───────── 지급대행(펌뱅킹) 이체 ─────────
+// 흐름: 신청(pending) → 승인 → 이체 중(processing, payout.queued → sent) → 입금 완료(complete) 또는 이체 실패(payout.failed)
+// 실제 송금은 서버(server.mjs)의 지급대행 어댑터(payout.mjs)가 수행하고 결과를 payoutSent / payoutResult로 기록한다.
+function startPayout(row, by) {
+  const now = new Date().toISOString();
+  row.status = 'processing';
+  row.updated = now;
+  row.handler = by;
+  row.payout = { status: 'queued', attempts: 0, requestedAt: now };
+}
+export const payoutQueue = state => state.transactions.filter(row => row.type === 'withdrawal' && row.status === 'processing' && row.payout?.status === 'queued');
+// 지급대행사에 보낼 이체 요청. transferId(거래번호)를 멱등 키로 써서 같은 출금이 두 번 송금되지 않게 한다.
+export function payoutRequest(state, row) {
+  const bank = account(state, row.userId)?.bank;
+  if (!bank?.verified) return null;
+  return { transferId: row.id, bank: bank.bank, bankCode: bankCodes[bank.bank] ?? '', accountNumber: bank.number, holder: bank.holder, amount: row.points - (row.fee ?? 0), memo: '스마일포인트' };
+}
+const payoutRow = (state, id) => state.transactions.find(item => item.id === id && item.type === 'withdrawal' && item.status === 'processing' && item.payout) ?? fail('이체 중인 출금을 찾을 수 없습니다.', 404);
+// 지급대행사가 요청을 접수함 (최종 결과는 웹훅 또는 상태 조회로 받는다)
+export function payoutSent(state, id, { ref = '', provider = '' } = {}) {
+  const row = payoutRow(state, id);
+  Object.assign(row.payout, { status: 'sent', ref: String(ref).slice(0, 80), provider: String(provider).slice(0, 30), sentAt: new Date().toISOString(), attempts: (row.payout.attempts ?? 0) + 1 });
+  delete row.payout.error;
+  return row;
+}
+// 이체 최종 결과. ok면 지급 완료, 아니면 이체 실패로 남기고 관리자가 재시도·수동 지급·반려 중 고른다.
+export function payoutResult(state, id, { ok, ref, provider, error } = {}) {
+  const row = payoutRow(state, id);
+  const owner = account(state, row.userId);
+  const now = new Date().toISOString();
+  const amount = row.points.toLocaleString('ko-KR');
+  if (row.payout.status === 'queued') row.payout.attempts = (row.payout.attempts ?? 0) + 1;
+  if (ref) row.payout.ref = String(ref).slice(0, 80);
+  if (provider) row.payout.provider = String(provider).slice(0, 30);
+  if (ok) {
+    row.status = 'complete';
+    row.updated = now;
+    Object.assign(row.payout, { status: 'paid', paidAt: now });
+    delete row.payout.error;
+    notify(state, row.userId, `출금 ${amount} P(실수령 ${(row.points - (row.fee ?? 0)).toLocaleString('ko-KR')}원)가 ${row.bank ?? '등록 계좌'}로 입금되었습니다.`, 'app/user/withdrawal');
+    log(state, row.handler === 'auto' ? '자동 승인' : row.handler, '출금 지급', row.id, `${owner?.name} · ${amount} P · ${row.payout.provider || '지급대행'}${row.payout.ref ? ' ' + row.payout.ref : ''}`);
+  } else {
+    Object.assign(row.payout, { status: 'failed', failedAt: now, error: String(error || '이체 실패').slice(0, 100) });
+    notify(state, 'admin', `이체 실패: ${owner?.name} · ${amount} P · ${row.payout.error}`, 'app/admin/payouts');
+  }
+  return row;
+}
+const failedPayout = (state, id) => {
+  const row = payoutRow(state, id);
+  if (row.payout.status !== 'failed') fail('이체 실패 상태인 출금만 처리할 수 있습니다.');
+  return row;
+};
+export function retryPayout(state, adminId, id) {
+  admin(state, adminId);
+  const row = failedPayout(state, id);
+  Object.assign(row.payout, { status: 'queued', requestedAt: new Date().toISOString() });
+  delete row.payout.error;
+  log(state, adminId, '이체 재시도', row.id, account(state, row.userId)?.name ?? '');
+  return row;
+}
+// 이체가 실패한 출금을 반려하고 포인트를 돌려준다.
+export function refundPayout(state, adminId, id, reason) {
+  admin(state, adminId);
+  const row = failedPayout(state, id);
+  if (!String(reason ?? '').trim()) fail('반려 사유를 입력해 주세요.');
+  Object.assign(row, { status: 'rejected', updated: new Date().toISOString(), handler: adminId, reason: String(reason).trim().slice(0, 100) });
+  notify(state, row.userId, `출금 ${row.points.toLocaleString('ko-KR')} P 신청이 반려되어 포인트가 복원되었습니다. 사유: ${row.reason}`, 'app/user/withdrawal');
+  log(state, adminId, '반려', row.id, `${account(state, row.userId)?.name} · ${row.points.toLocaleString('ko-KR')} P · 이체 실패 후 반려 · ${row.reason}`);
+  return row;
+}
+// 관리자가 은행에서 직접 송금한 뒤 지급 완료로 마감한다.
+export function completePayoutManually(state, adminId, id) {
+  admin(state, adminId);
+  const row = failedPayout(state, id);
+  const now = new Date().toISOString();
+  Object.assign(row, { status: 'complete', updated: now, handler: adminId });
+  Object.assign(row.payout, { status: 'paid', method: 'manual', paidAt: now });
+  notify(state, row.userId, `출금 ${row.points.toLocaleString('ko-KR')} P가 ${row.bank ?? '등록 계좌'}로 지급되었습니다.`, 'app/user/withdrawal');
+  log(state, adminId, '출금 지급', row.id, `${account(state, row.userId)?.name} · ${row.points.toLocaleString('ko-KR')} P · 수동 지급`);
+  return row;
+}
+// 모의 지급대행: 지급대행 API 키가 없는 데모 환경에서 이체 흐름을 그대로 보여 준다.
+// 계좌번호가 0000으로 끝나면 이체 실패를 재현한다.
+export function runMockPayouts(state) {
+  const rows = payoutQueue(state);
+  for (const row of rows) {
+    const request = payoutRequest(state, row);
+    if (!request) payoutResult(state, row.id, { ok: false, provider: '모의 지급대행', error: '출금 계좌를 확인할 수 없음' });
+    else if (request.accountNumber.endsWith('0000')) payoutResult(state, row.id, { ok: false, provider: '모의 지급대행', error: '수취 계좌 오류 (모의)' });
+    else payoutResult(state, row.id, { ok: true, provider: '모의 지급대행', ref: 'MOCK-' + row.id });
+  }
+  return rows.length;
 }
 
 // ───────── 쇼핑·쿠폰 ─────────
@@ -649,10 +747,18 @@ export function update(state, actorId, id, status, reason = '') {
       return row;
     }
   }
+  if (status === 'complete' && row.type === 'withdrawal' && state.settings.payoutMode === 'api') {
+    // 지급대행 연동: 승인하면 이체를 요청하고, 입금이 확인되면 완료된다.
+    startPayout(row, actorId);
+    notify(state, row.userId, `출금 ${amount} P가 승인되어 계좌 이체를 요청했습니다. 입금되면 다시 알려 드릴게요.`, 'app/user/withdrawal');
+    log(state, actorId, '출금 승인', row.id, `${owner?.name} · ${amount} P · 지급대행 이체 요청`);
+    return row;
+  }
   row.status = status;
   row.updated = new Date().toISOString();
   row.handler = actorId;
   if (reason) row.reason = clip(reason, 100);
+  if (status === 'complete' && row.type === 'withdrawal') row.payout = { status: 'paid', method: 'manual', paidAt: row.updated };
   if (status === 'canceled' && row.type === 'exchange') queueWebhook(state, row.partner, 'exchange.canceled', { exchangeId: row.id });
   // 최고 관리자가 교환을 처리하면 제휴사가 장부를 맞출 수 있도록 알린다.
   if (viewer.role === 'admin' && row.type === 'exchange') queueWebhook(state, row.partner, status === 'complete' ? 'exchange.completed' : 'exchange.rejected', { exchangeId: row.id, member: row.member ?? null, amount: row.source, points: row.points, by: 'admin', ...(row.reason ? { reason: row.reason } : {}) });
@@ -733,7 +839,7 @@ export function updateProduct(state, adminId, productId, { cost, stock, active }
 export function updateSettings(state, adminId, input) {
   admin(state, adminId);
   const next = { ...state.settings };
-  for (const key of ['fee', 'withdrawalMinimum', 'dailyWithdrawLimit', 'attendancePoints', 'attendanceBonus', 'signupBonus', 'referralBonus', 'giftMinimum', 'dailyGiftLimit']) {
+  for (const key of ['fee', 'withdrawalMinimum', 'dailyWithdrawLimit', 'attendancePoints', 'attendanceBonus', 'signupBonus', 'referralBonus', 'giftMinimum', 'dailyGiftLimit', 'payoutAutoLimit']) {
     if (input[key] === undefined) continue;
     const value = int(Number(input[key]));
     if (!(value >= 0 && value <= 100000000)) fail('설정값은 0 이상 1억 이하의 정수여야 합니다.');
@@ -741,9 +847,10 @@ export function updateSettings(state, adminId, input) {
   }
   if (next.withdrawalMinimum <= next.fee) fail('최소 출금액은 수수료보다 커야 합니다.');
   if (next.dailyGiftLimit < next.giftMinimum) fail('하루 선물 한도는 최소 선물 금액 이상이어야 합니다.');
-  next.maintenance = !!input.maintenance;
+  if (input.maintenance !== undefined) next.maintenance = !!input.maintenance;
+  if (['manual', 'api'].includes(input.payoutMode)) next.payoutMode = input.payoutMode;
   state.settings = next;
-  log(state, adminId, '설정 변경', '운영 설정', `수수료 ${next.fee} P · 최소 출금 ${next.withdrawalMinimum} P · 출석 ${next.attendancePoints} P · 선물 한도 ${next.dailyGiftLimit} P${next.maintenance ? ' · 점검 모드' : ''}`);
+  log(state, adminId, '설정 변경', '운영 설정', `수수료 ${next.fee} P · 최소 출금 ${next.withdrawalMinimum} P · 출석 ${next.attendancePoints} P · 선물 한도 ${next.dailyGiftLimit} P · 지급 ${next.payoutMode === 'api' ? '지급대행 API' + (next.payoutAutoLimit ? ` (자동 승인 ${next.payoutAutoLimit.toLocaleString('ko-KR')} P 이하)` : '') : '수동'}${next.maintenance ? ' · 점검 모드' : ''}`);
 }
 export function addAnnouncement(state, adminId, { title, body, pinned }) {
   admin(state, adminId);
@@ -816,14 +923,20 @@ export function series(rows, days, pick, now = new Date()) {
   }
   return keys.map(key => ({ key, label: key.slice(5).replace('-', '.'), value: sums[key] }));
 }
+// 최근 N개월 월별 합계 (한국 시간 기준)
+export function monthly(rows, months, pick, now = new Date()) {
+  const [year, month] = kstDay(now).split('-').map(Number);
+  const keys = Array.from({ length: months }, (_, i) => new Date(Date.UTC(year, month - 1 - (months - 1 - i), 1)).toISOString().slice(0, 7));
+  const sums = Object.fromEntries(keys.map(key => [key, 0]));
+  for (const row of rows) {
+    const key = kstDay(row.date).slice(0, 7);
+    if (key in sums) sums[key] += pick(row);
+  }
+  return keys.map(key => ({ key, label: Number(key.slice(5)) + '월', value: sums[key] }));
+}
 
 // ───────── 프로필 이미지 ─────────
-export function setAvatar(state, id, index) {
-  const target = account(state, id);
-  if (!target || !Number.isInteger(index) || !animals[index]) fail('캐릭터를 찾을 수 없습니다.');
-  target.avatar = index;
-  return target;
-}
+// 동물 캐릭터는 가입할 때 무작위로 1종이 정해지고 바꿀 수 없다. 직접 올린 사진이 있으면 사진이 우선 표시된다.
 export function setPhoto(state, id, photo) {
   const target = account(state, id);
   photo = String(photo ?? '');
@@ -1187,7 +1300,7 @@ export function disableTotp(state, id, code) {
 export function deleteAccount(state, userId, { password, confirm } = {}) {
   const target = user(state, userId);
   if (target.password ? !security.verify(String(password ?? ''), target.password) : String(confirm ?? '').trim() !== '탈퇴') fail(target.password ? '비밀번호가 일치하지 않습니다.' : "확인을 위해 '탈퇴'를 입력해 주세요.");
-  if (state.transactions.some(row => row.userId === userId && row.status === 'pending' && ['exchange', 'withdrawal'].includes(row.type))) fail('처리 중인 교환·출금이 있어 탈퇴할 수 없습니다. 처리가 끝난 뒤 다시 시도해 주세요.');
+  if (state.transactions.some(row => row.userId === userId && ['pending', 'processing'].includes(row.status) && ['exchange', 'withdrawal'].includes(row.type))) fail('처리 중인 교환·출금이 있어 탈퇴할 수 없습니다. 처리가 끝난 뒤 다시 시도해 주세요.');
   const left = Math.max(0, balances(state, userId).available);
   for (const [partnerId, link] of Object.entries(target.links ?? {})) if (link.verified) queueWebhook(state, partnerId, 'member.unlinked', { member: link.loginId });
   for (const row of state.transactions) if (row.userId === userId && row.hold && row.status === 'pending') row.status = 'canceled';
@@ -1204,6 +1317,8 @@ export function deleteAccount(state, userId, { password, confirm } = {}) {
 export function normalize(state, demo = true) {
   state.settings = { fee: 500, withdrawalMinimum: 5000, dailyWithdrawLimit: 500000, attendancePoints: 10, attendanceBonus: 50, signupBonus: 1000, referralBonus: 500, giftMinimum: 1000, dailyGiftLimit: 100000, maintenance: false, ...state.settings };
   state.settings.mockWebhardBalance ??= demo;
+  state.settings.payoutMode ??= demo ? 'api' : 'manual';
+  state.settings.payoutAutoLimit ??= 0;
   state.events ??= [];
   state.webhardBalances ??= {};
   state.resets ??= [];

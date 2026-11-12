@@ -1,22 +1,24 @@
 import { animals, banks, escape, faqFor, format, grades, icon, providers, ticketCategories } from '../catalog.js';
 import { activeEvents, balances, feeFor, grade, kstDay, notificationsFor, partnerAvailable, series, streak, types, visibleTransactions, withdrawnToday } from '../state.js';
-import { action, announcementList, avatar, barChart, barcode, blank, button, donut, faqList, maskAccount, metric, money, panel, pill, productCards, productName, progress, providerName, showDate, showTime, table, trend } from './ui.js';
+import { action, animalIndex, announcementList, avatar, barChart, barcode, blank, button, donut, exchangeFlow, faqList, maskAccount, metric, money, panel, pill, productCard, productCards, productName, progress, providerName, showDate, showTime, table, transactionLabel, trend, withdrawalFlow } from './ui.js';
 
 export const userMenu = [
   ['개인', [['overview', 'home', '내 지갑'], ['exchange', 'exchange', '포인트 교환'], ['withdrawal', 'bank', '계좌 출금'], ['shop', 'shop', '포인트 쇼핑'], ['coupons', 'ticket', '쿠폰함']]],
-  ['혜택', [['attendance', 'calendar', '출석체크'], ['gift', 'send', '포인트 선물']]],
-  ['내 정보', [['activity', 'file', '거래 내역'], ['support', 'help', '고객센터']]],
+  ['혜택', [['attendance', 'calendar', '출석체크'], ['gift', 'send', '포인트 선물'], ['benefits', 'trophy', '등급·이벤트']]],
+  ['내 정보', [['activity', 'file', '거래 내역'], ['alerts', 'bell', '알림'], ['support', 'help', '고객센터']]],
 ];
 export const userDescriptions = {
   exchange: '웹하드 계정을 연결하고 포인트를 스마일 포인트로 교환하세요.',
-  withdrawal: '본인 명의 계좌로 포인트를 출금하세요. 등급이 오르면 수수료가 할인됩니다.',
+  withdrawal: '본인 명의 계좌로 포인트를 출금하세요. 신청부터 입금까지 진행 상황을 바로 확인할 수 있습니다.',
+  benefits: '회원 등급별 혜택과 진행 중인 이벤트, 포인트를 모으는 방법을 확인하세요.',
+  alerts: '교환 승인, 출금 입금, 문의 답변 등 내 계정의 알림을 모아 보세요.',
   shop: '보유한 포인트로 모바일 쿠폰을 구매하세요.',
   coupons: '구매한 모바일 쿠폰의 바코드와 유효기간을 확인하세요.',
   attendance: '하루 한 번 출석하고 포인트를 받으세요. 7일 연속 출석하면 보너스!',
   gift: '친구나 가족에게 포인트를 선물하고, 추천 코드로 함께 혜택을 받으세요.',
   activity: '교환, 출금, 구매, 적립 내역을 기간과 유형별로 확인하세요.',
   support: '궁금한 점을 문의하고 답변을 확인하세요.',
-  profile: '프로필 사진, 동물 캐릭터, 연락처와 알림 설정을 관리하세요.',
+  profile: '프로필 사진, 연락처와 알림 설정을 관리하세요.',
 };
 
 const unlinkedNote = '<p class="muted small">웹하드 아이디를 입력하면 해당 웹하드로 인증번호가 전송됩니다. 웹하드에서 받은 번호를 입력해야 연결이 완료되고 교환 가능 포인트를 불러옵니다.</p>';
@@ -54,6 +56,10 @@ function overview(state, me) {
   const prevWeek = daily.slice(0, 7).reduce((s, d) => s + d.value, 0), thisWeek = daily.slice(7).reduce((s, d) => s + d.value, 0);
   const spentBy = type => rows.filter(row => row.type === type && ['complete', 'pending'].includes(row.status)).reduce((sum, row) => sum + row.points, 0);
   const linked = state.partners.filter(item => me.links[item.id]?.verified);
+  const active = rows.filter(row => ['pending', 'processing'].includes(row.status) && ['exchange', 'withdrawal'].includes(row.type)).slice(0, 3);
+  const sellable = state.products.filter(item => item.active && item.stock > 0);
+  const affordable = sellable.filter(item => item.cost <= bal.available).sort((a, b) => (b.best ? 1 : 0) - (a.best ? 1 : 0) || b.cost - a.cost);
+  const picks = (affordable.length ? affordable : [...sellable].sort((a, b) => a.cost - b.cost)).slice(0, 4);
   return `<section class="dash-banner user-banner"><div>
       <span class="eyebrow">${level.name} 회원 · 내 지갑</span>
       <h1>${escape(me.name)}님, 안녕하세요.</h1>
@@ -66,6 +72,7 @@ function overview(state, me) {
       ${metric('처리 중', money(bal.reserved), 'bank', '진행 중인 출금 신청', 2)}
       ${metric('이번 달 적립', money(monthIn), 'star', '교환·출석·이벤트 합계', 3, trend(thisWeek, prevWeek))}
     </div>
+    ${active.length ? panel('진행 중인 신청', `<div class="track-list">${active.map(row => trackCard(state, row)).join('')}</div>`, pill(active.length + '건 진행 중', 'pending')) : ''}
     <div class="dash-grid three">
       <section class="panel attend-card"><div class="panel-head"><h2>오늘의 출석</h2>${pill(streak(state, me.id) + '일 연속', 'complete')}</div>
         <div class="week-dots">${Array.from({ length: 7 }, (_, i) => { const key = kstDay(Date.now() - (6 - i) * 86400000); const on = (state.attendance[me.id] ?? []).includes(key); return `<span class="${on ? 'on' : ''} ${key === today ? 'today' : ''}"><i>${on ? icon('check', 14) : ''}</i><small>${key.slice(8)}</small></span>`; }).join('')}</div>
@@ -90,7 +97,14 @@ function overview(state, me) {
       ${panel('최근 거래', table(state, rows.slice(0, 6), me), button('전체 내역', '#app/user/activity', 'text-btn', 'chevron'))}
       ${panel('연결된 웹하드', linked.length ? `<ul class="link-list">${linked.map(item => `<li><span class="partner-logo ${item.color} sm">${escape(item.initials)}</span><div><strong>${escape(item.name)}</strong><small>${escape(me.links[item.id].loginId)}</small></div><b>${partnerAvailable(state, me.id, item.id) === null ? '승인 시 확인' : format(partnerAvailable(state, me.id, item.id)) + ' P'}</b></li>`).join('')}</ul>` : blank('연결된 웹하드가 없습니다.', 'link'), button('관리', '#app/user/exchange', 'text-btn', 'chevron'))}
     </div>
+    ${picks.length ? panel(affordable.length ? '지금 바꿀 수 있는 쿠폰' : '조금만 더 모으면 받을 수 있어요', `<div class="card-grid product-grid">${picks.map(productCard).join('')}</div>`, button('쇼핑 전체 보기', '#app/user/shop', 'text-btn', 'chevron')) : ''}
     ${panel('공지사항', announcementList(state.announcements.slice(0, 3)))}`;
+}
+
+function trackCard(state, row) {
+  return `<article class="track"><div class="track-head"><strong>${types[row.type]} · ${transactionLabel(state, row)}</strong><b>${format(row.points)} P</b></div>
+    ${row.type === 'withdrawal' ? withdrawalFlow(row) : exchangeFlow(row)}
+    <div class="track-foot"><small class="muted">${row.id}</small>${action('상세 보기', 'transaction', `data-id="${row.id}"`, 'text-btn')}</div></article>`;
 }
 
 function exchangePage(state, me) {
@@ -111,19 +125,29 @@ function withdrawalPage(state, me) {
   if (me.bankRequest) return `${bankConfirm(state, me)}${panel('출금 내역', table(state, history, me))}`;
   if (!me.bank?.verified) return `${bankForm(me, false)}${panel('출금 내역', table(state, history, me))}`;
   const max = Math.min(bal.available, limitLeft);
-  return `<div class="dash-grid two-one">
+  const api = state.settings.payoutMode === 'api';
+  const auto = api ? state.settings.payoutAutoLimit : 0;
+  const net = row => row.points - (row.fee ?? 0);
+  const monthKey = kstDay().slice(0, 7);
+  const paid = history.filter(row => row.status === 'complete');
+  const paidMonth = paid.filter(row => kstDay(row.date).startsWith(monthKey));
+  const active = history.filter(row => ['pending', 'processing'].includes(row.status));
+  return `<div class="summary-strip"><div><span>이번 달 출금</span><strong>${paidMonth.length}건 · ${format(paidMonth.reduce((s, r) => s + net(r), 0))}원</strong></div><div><span>진행 중</span><strong>${active.length}건 · ${format(active.reduce((s, r) => s + r.points, 0))} P</strong></div><div><span>누적 실수령</span><strong>${format(paid.reduce((s, r) => s + net(r), 0))}원</strong></div><div><span>지급 방식</span><strong>${api ? '자동 이체' : '영업일 지급'}</strong></div></div>
+    ${active.length ? panel('진행 중인 출금', `<div class="track-list">${active.map(row => trackCard(state, row)).join('')}</div>`, pill(active.length + '건', 'pending')) : ''}
+    <div class="dash-grid two-one">
     <section class="panel"><div class="panel-head"><h2>출금 신청</h2>${pill(level.name + ' 수수료 ' + format(fee) + ' P', 'complete')}</div>
       <form class="stack" data-form="withdrawal"><label for="withdraw-amount">출금할 포인트</label>
         <div class="amount-field"><input id="withdraw-amount" name="amount" type="number" inputmode="numeric" required min="${state.settings.withdrawalMinimum}" max="${max}" step="1" placeholder="${format(state.settings.withdrawalMinimum)} 이상" data-fee="${fee}"><span>P</span></div>
         <div class="chips">${[10000, 30000, 50000].map(value => `<button type="button" class="chip" data-action="fill" data-target="withdraw-amount" data-value="${value}" ${value > max ? 'disabled' : ''}>${format(value)}</button>`).join('')}<button type="button" class="chip" data-action="fill" data-target="withdraw-amount" data-value="${max}">전액</button></div>
         <div class="form-summary"><div><span>사용 가능</span><strong>${money(bal.available)}</strong></div><div><span>오늘 남은 한도</span><strong>${money(limitLeft)}</strong></div><div><span>출금 수수료</span><strong>${money(fee)}</strong></div><div class="total"><span>예상 실수령액</span><strong id="withdraw-net">0원</strong></div></div>
         <button type="submit" class="btn primary block" ${max < state.settings.withdrawalMinimum ? 'disabled' : ''}>출금 신청 ${icon('arrow', 17)}</button>
-        <p class="muted small">최소 ${format(state.settings.withdrawalMinimum)} P · 승인 후 다음 영업일 입금 · 처리 대기 중에는 취소할 수 있어요.</p>
+        <p class="muted small">최소 ${format(state.settings.withdrawalMinimum)} P · ${api ? `${auto ? format(auto) + ' P 이하는 심사 없이, 그 외에는 ' : ''}승인 즉시 지급대행사를 통해 등록 계좌로 자동 이체` : '승인 후 다음 영업일 입금'} · 심사 대기 중에는 취소할 수 있어요.</p>
       </form></section>
     <div class="side-stack">
       <section class="panel bank-card"><span class="eyebrow">출금 계좌</span><h2>${escape(me.bank.bank)}</h2><p class="bank-number">${maskAccount(me.bank.number)}</p><p class="muted small">예금주 ${escape(me.bank.holder)} · ${pill('본인 확인 완료', 'complete')}</p>
         ${action('계좌 변경', 'bank-edit', '', 'btn outline sm', 'edit')}</section>
       <section class="panel"><h2>등급별 수수료</h2><ul class="fee-list">${grades.map(g => `<li class="${g.id === level.id ? 'on' : ''}"><span>${g.name}</span><b>${g.feeRate ? format(Math.round(state.settings.fee * g.feeRate)) + ' P' : '무료'}</b></li>`).join('')}</ul></section>
+      <section class="panel"><h2>출금 안내</h2><ul class="guide-list"><li>출금은 <b>본인 명의 계좌</b>로만 가능합니다.</li><li>${api ? '승인되면 지급대행사를 통해 <b>자동으로 이체</b>되고, 입금되면 알림을 보내 드립니다.' : '승인 후 <b>다음 영업일</b>에 입금됩니다.'}</li><li>은행 점검 시간(매일 23:30~00:30)에는 이체가 지연될 수 있습니다.</li><li>하루 최대 <b>${format(state.settings.dailyWithdrawLimit)} P</b>까지 신청할 수 있습니다.</li></ul></section>
     </div></div>
     ${panel('출금 내역', table(state, history, me, { showUpdate: true }))}`;
 }
@@ -223,7 +247,7 @@ function giftPage(state, me) {
 export function activityFilters(ui, typeList) {
   return `<div class="filters"><label class="search-field">${icon('search', 18)}<span class="sr-only">검색</span><input type="search" data-ui="q" value="${escape(ui.q ?? '')}" placeholder="거래번호, 내용 검색"></label>
     <select data-ui="type" aria-label="유형"><option value="">전체 유형</option>${typeList.map(t => `<option value="${t}" ${ui.type === t ? 'selected' : ''}>${types[t]}</option>`).join('')}</select>
-    <select data-ui="status" aria-label="상태"><option value="">전체 상태</option>${[['pending', '처리 대기'], ['complete', '완료'], ['rejected', '반려'], ['canceled', '취소']].map(([v, l]) => `<option value="${v}" ${ui.status === v ? 'selected' : ''}>${l}</option>`).join('')}</select>
+    <select data-ui="status" aria-label="상태"><option value="">전체 상태</option>${[['pending', '처리 대기'], ['processing', '이체 중'], ['complete', '완료'], ['rejected', '반려'], ['canceled', '취소']].map(([v, l]) => `<option value="${v}" ${ui.status === v ? 'selected' : ''}>${l}</option>`).join('')}</select>
     <select data-ui="period" aria-label="기간">${[['', '전체 기간'], ['7', '최근 7일'], ['30', '최근 30일'], ['90', '최근 90일']].map(([v, l]) => `<option value="${v}" ${(ui.period ?? '') === v ? 'selected' : ''}>${l}</option>`).join('')}</select>
     ${action('CSV', 'csv', 'data-name="거래내역"', 'btn outline sm', 'download')}</div>`;
 }
@@ -272,9 +296,8 @@ export function profilePage(state, me) {
   return `<div class="dash-grid two-one">
     <section class="panel profile-panel"><div class="profile-current">${avatar(me, 'profile-avatar')}<div><h2>${escape(me.name)}</h2><p>${escape(me.email)} · ${providerName(me.provider)} 가입</p>
       <div class="profile-actions"><label class="btn outline sm" for="profile-photo">${icon('edit', 16)} 사진 올리기</label><input class="sr-only" id="profile-photo" type="file" accept="image/jpeg,image/png,image/webp">
-      ${me.photo || me.photoUrl ? action('사진 삭제', 'remove-photo', '', 'text-btn') : ''}</div><p class="muted small">직접 올린 사진이 동물 캐릭터보다 우선 표시됩니다.</p></div></div>
-      <div class="panel-head avatar-heading"><h2>동물 캐릭터</h2>${action('무작위', 'random-avatar', '', 'btn outline sm', 'refresh')}</div>
-      <div class="avatar-grid">${animals.map((name, i) => `<button type="button" class="avatar-option ${me.avatar === i ? 'selected' : ''}" data-action="avatar" data-id="${i}" aria-pressed="${me.avatar === i}"><img src="./assets/animal-${i + 1}.jpg" alt="" loading="lazy"><span>${name}</span></button>`).join('')}</div>
+      ${me.photo || me.photoUrl ? action('사진 삭제', 'remove-photo', '', 'text-btn') : ''}</div><p class="muted small">JPG·PNG·WebP, 8MB 이하. 직접 올린 사진이 캐릭터보다 우선 표시됩니다.</p></div></div>
+      <div class="profile-character"><img src="./assets/animal-${animalIndex(me) + 1}.jpg" alt="" loading="lazy"><div><strong>내 캐릭터 · ${animals[animalIndex(me)]}</strong><small>가입할 때 무작위로 정해진 캐릭터예요. 사진을 올리면 사진이 먼저 보이고, 사진을 삭제하면 다시 이 캐릭터가 표시됩니다.</small></div>${me.photo || me.photoUrl ? pill('사진 사용 중', 'complete') : pill('캐릭터 사용 중')}</div>
     </section>
     <div class="side-stack">
       <section class="panel"><h2>기본 정보</h2><form class="stack" data-form="profile"><label for="profile-name">표시 이름</label><input id="profile-name" name="name" required maxlength="24" value="${escape(me.name)}">
@@ -308,9 +331,38 @@ function deletePanel(state, me) {
       <button class="btn danger sm" type="submit">탈퇴하기</button></form></details>`;
 }
 
-export function notificationList(state, me) {
-  const list = notificationsFor(state, me).slice(0, 30);
+export function notificationList(state, me, limit = 30) {
+  const list = notificationsFor(state, me).slice(0, limit);
   return list.length ? `<ul class="notice-list">${list.map(item => `<li class="${item.read ? '' : 'unread'}"><a href="#${item.link}" data-action="close">${icon('bell', 16)}<span>${escape(item.text)}<small>${showTime(item.date)}</small></span></a></li>`).join('')}</ul>` : blank('새 알림이 없습니다.', 'bell');
+}
+
+function benefitsPage(state, me) {
+  const level = grade(state, me.id);
+  const events = activeEvents(state);
+  const rewards = visibleTransactions(state, me).filter(row => row.status === 'complete' && ['reward', 'attendance'].includes(row.type));
+  const sum = test => rewards.filter(test).reduce((s, row) => s + row.points, 0);
+  const s = state.settings;
+  return `<section class="panel grade-hero"><div class="panel-head"><h2>내 등급</h2><span class="grade-badge" style="--c:${level.color}">${icon('trophy', 15)} ${level.name}</span></div>
+      <p class="grade-line"><strong>${format(level.exchanged)} P</strong> 누적 교환</p>${progress(level.progress, '다음 등급까지 진행률')}
+      <p class="muted small">${level.next ? `<b>${level.next.name}</b>까지 ${format(level.next.min - level.exchanged)} P 남았어요. 교환이 승인될 때마다 누적됩니다.` : '최고 등급입니다. 출금 수수료가 무료예요!'}</p>
+      <div class="table-scroll"><table><thead><tr><th>등급</th><th class="numeric">누적 교환 기준</th><th class="numeric">출금 수수료</th><th>상태</th></tr></thead><tbody>${grades.map(g => `<tr class="${g.id === level.id ? 'row-on' : ''}"><td><span class="grade-badge" style="--c:${g.color}">${g.name}</span></td><td class="numeric">${format(g.min)} P 이상</td><td class="numeric">${g.feeRate ? format(Math.round(s.fee * g.feeRate)) + ' P' : '무료'}</td><td>${g.id === level.id ? pill('현재 등급', 'complete') : g.min > level.exchanged ? `<small class="muted">${format(g.min - level.exchanged)} P 남음</small>` : pill('달성')}</td></tr>`).join('')}</tbody></table></div></section>
+    ${panel('진행 중인 이벤트', events.length ? `<div class="card-grid event-grid">${events.map(event => `<article class="event-card"><span class="feature-icon tone-3">${icon('megaphone', 22)}</span><div><h3>${escape(event.title)}</h3><p class="muted small">${escape(state.partners.find(p => p.id === event.partner)?.name ?? '')} · ${event.firstOnly ? '첫 교환' : '모든 교환'} ${event.rate}% 추가 적립${event.until ? ` · ~${event.until.slice(5).replace('-', '.')}` : ''}</p></div>${button('교환하러 가기', '#app/user/exchange', 'btn outline sm', 'arrow')}</article>`).join('')}</div>` : blank('진행 중인 이벤트가 없습니다. 새 이벤트가 열리면 알림으로 알려 드릴게요.', 'megaphone'))}
+    <div class="dash-grid two-one">
+      <section class="panel"><h2>포인트 모으는 방법</h2><ul class="integration-list">
+        <li><span class="feature-icon tone-0">${icon('exchange', 20)}</span><div><strong>웹하드 포인트 교환</strong><small>제휴 웹하드 포인트를 스마일 포인트로 교환 · 등급도 함께 올라요</small></div>${button('교환', '#app/user/exchange', 'text-btn', 'chevron')}</li>
+        <li><span class="feature-icon tone-3">${icon('calendar', 20)}</span><div><strong>출석체크 ${format(s.attendancePoints)} P</strong><small>7일 연속 출석하면 보너스 ${format(s.attendanceBonus)} P</small></div>${button('출석', '#app/user/attendance', 'text-btn', 'chevron')}</li>
+        <li><span class="feature-icon tone-1">${icon('users', 20)}</span><div><strong>친구 초대 ${format(s.referralBonus)} P</strong><small>친구가 첫 교환을 완료하면 적립 · 내 코드 <code>${me.referral}</code></small></div>${action('코드 복사', 'copy', `data-value="${me.referral}"`, 'text-btn')}</li>
+        <li><span class="feature-icon tone-2">${icon('megaphone', 20)}</span><div><strong>교환 이벤트</strong><small>이벤트 기간에 교환하면 승인과 함께 추가 포인트 자동 적립</small></div></li></ul></section>
+      <section class="panel"><h2>내가 받은 혜택</h2><ul class="fee-list"><li><span>출석 적립</span><b>${format(sum(row => row.type === 'attendance' || /출석/.test(row.memo ?? '')))} P</b></li><li><span>친구 초대</span><b>${format(sum(row => /추천/.test(row.memo ?? '')))} P</b></li><li><span>가입·이벤트</span><b>${format(sum(row => row.type === 'reward' && !/추천|출석/.test(row.memo ?? '')))} P</b></li><li class="on"><span>혜택 합계</span><b>${format(sum(() => true))} P</b></li></ul></section>
+    </div>`;
+}
+
+function alertsPage(state, me) {
+  const all = notificationsFor(state, me);
+  const unread = all.filter(item => !item.read).length;
+  return `<div class="summary-strip"><div><span>전체 알림</span><strong>${all.length}건</strong></div><div><span>읽지 않음</span><strong class="${unread ? 'minus' : ''}">${unread}건</strong></div></div>
+    ${panel('알림', notificationList(state, me, 100), unread ? action('모두 읽음', 'read-all', '', 'btn outline sm', 'check') : '')}
+    <p class="muted small">알림 수신 방법(이메일·문자)은 ${button('내 프로필', '#app/user/profile', 'text-btn', '')}에서 바꿀 수 있습니다.</p>`;
 }
 
 export function userPage(state, me, page, ui) {
@@ -322,6 +374,8 @@ export function userPage(state, me, page, ui) {
     case 'coupons': return couponsPage(state, me, ui);
     case 'attendance': return attendancePage(state, me);
     case 'gift': return giftPage(state, me);
+    case 'benefits': return benefitsPage(state, me);
+    case 'alerts': return alertsPage(state, me);
     case 'activity': return activityPage(state, me, ui);
     case 'support': return supportPage(state, me, false, ui);
     case 'profile': return profilePage(state, me);

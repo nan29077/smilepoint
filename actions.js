@@ -54,7 +54,6 @@ export const ops = {
   // 모든 로그인 계정
   updateProfile: anyone((s, a, p) => S.updateProfile(s, a.id, p)),
   changePassword: anyone((s, a, p) => S.changePassword(s, a.id, p.before, p.after)),
-  setAvatar: anyone((s, a, p) => S.setAvatar(s, a.id, p.index)),
   setPhoto: anyone((s, a, p) => S.setPhoto(s, a.id, p.photo)),
   readAll: anyone((s, a) => S.readAll(s, a)),
   cancel: anyone((s, a, p) => S.update(s, a.id, p.id, 'canceled')),
@@ -74,6 +73,9 @@ export const ops = {
   confirmSettlement: partner((s, a, p) => S.confirmSettlement(s, a.partnerId, p.date, p, a.id)),
 
   // 최고 관리자
+  retryPayout: admin((s, a, p) => S.retryPayout(s, a.id, p.id)),
+  refundPayout: admin((s, a, p) => S.refundPayout(s, a.id, p.id, p.reason)),
+  completePayout: admin((s, a, p) => S.completePayoutManually(s, a.id, p.id)),
   adjust: admin((s, a, p) => S.adjust(s, a.id, p.userId, p.amount, p.reason)),
   setMemberStatus: admin((s, a, p) => S.setMemberStatus(s, a.id, p.userId, p.status)),
   approveBank: admin((s, a, p) => S.approveBank(s, a.id, p.userId)),

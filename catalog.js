@@ -47,6 +47,8 @@ export const providers = {
 };
 
 export const banks = ['국민은행', '신한은행', '우리은행', '하나은행', '농협은행', '기업은행', '카카오뱅크', '토스뱅크', '케이뱅크', '새마을금고', '우체국'];
+// 금융결제원 표준 은행 코드 (지급대행 이체 요청에 사용)
+export const bankCodes = { 국민은행: '004', 신한은행: '088', 우리은행: '020', 하나은행: '081', 농협은행: '011', 기업은행: '003', 카카오뱅크: '090', 토스뱅크: '092', 케이뱅크: '089', 새마을금고: '045', 우체국: '071' };
 
 export const grades = [
   { id: 'bronze', name: '브론즈', min: 0, feeRate: 1, color: '#b0773f' },
@@ -135,6 +137,7 @@ const paths = {
   cake: '<path d="M4 20h16v-7H4v7Zm0-4c2 1.5 4 1.5 6 0s4-1.5 6 0 3 1 4 0M12 13V9m0-5c1 1.3 1 2.5 0 3"/>',
   store: '<path d="M4 10v10h16V10M3 4h18l-1 6H4L3 4Zm6 16v-6h6v6"/>',
   card: '<rect x="3" y="5" width="18" height="14" rx="2"/><path d="M3 10h18M7 15h4"/>',
+  zap: '<path d="M13 2 4 14h7l-1 8 9-12h-7l1-8Z"/>',
 };
 export const icon = (name, size = 22) => `<svg aria-hidden="true" width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">${paths[name] ?? paths.arrow}</svg>`;
 

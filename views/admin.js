@@ -1,14 +1,14 @@
-import { escape, format, icon } from '../catalog.js';
-import { account, balances, grade, kstDay, series } from '../state.js';
+import { escape, format, grades, icon } from '../catalog.js';
+import { account, balances, direction, grade, kstDay, monthly, series } from '../state.js';
 import { pendingQueue, settlementTable } from './partner.js';
 import { slides } from './site.js';
 import { activityFilters, applyFilters } from './user.js';
 import { action, announcementList, avatar, barChart, blank, button, donut, maskAccount, metric, money, moreButton, pageSize, panel, pill, productVisual, providerName, showDate, showTime, table, trend, transactionLabel } from './ui.js';
 
 export const adminMenu = [
-  ['대시보드', [['overview', 'home', '운영 개요']]],
+  ['대시보드', [['overview', 'home', '운영 개요'], ['report', 'activity', '통계 리포트']]],
   ['회원·제휴', [['members', 'users', '회원 관리'], ['partners', 'layers', '제휴사 관리'], ['staff', 'key', '운영진 계정']]],
-  ['거래 심사', [['requests', 'exchange', '교환 심사'], ['payouts', 'bank', '출금 심사'], ['transactions', 'file', '전체 거래']]],
+  ['거래 심사', [['requests', 'exchange', '교환 심사'], ['payouts', 'bank', '출금 심사·지급'], ['transactions', 'file', '전체 거래']]],
   ['쇼핑', [['products', 'gift', '쿠폰 상품'], ['orders', 'shop', '쿠폰 주문']]],
   ['운영', [['settlement', 'chart', '정산 및 대사'], ['support', 'help', '고객센터'], ['content', 'megaphone', '배너·공지'], ['integrations', 'link', '연동 관리'], ['settings', 'settings', '운영 설정'], ['audit', 'shield', '감사 기록']]],
 ];
@@ -18,16 +18,17 @@ export const adminDescriptions = {
   staff: '웹하드 관리자·최고 관리자 계정을 만들고 정지하거나 비밀번호를 초기화하세요.',
   integrations: '소셜 로그인, 웹하드 API, 쿠폰 공급사, 계좌 지급 등 외부 연동 상태를 확인하세요.',
   requests: '모든 제휴사의 교환 신청을 심사하세요.',
-  payouts: '출금 신청을 확인하고 지급 또는 반려하세요. 여러 건을 한 번에 처리할 수 있습니다.',
+  report: '월별 가입·교환·출금·쿠폰 판매와 포인트 발행 현황을 확인하세요.',
+  payouts: '출금 신청을 심사하고 지급대행 이체 진행 상황과 실패 건을 관리하세요.',
   transactions: '서비스 전체 거래 원장을 조회하세요.',
   products: '모바일 쿠폰 상품을 등록하고 판매 포인트, 재고, 판매 상태를 관리하세요.',
   orders: '쿠폰 주문과 사용 현황을 확인하세요.',
   settlement: '제휴사별 교환 완료 내역과 정산 금액을 대사하세요.',
   support: '회원 1:1 문의에 답변하세요.',
   content: '메인 배너 구성을 확인하고 공지사항을 등록·관리하세요.',
-  settings: '수수료, 한도, 적립 포인트 등 서비스 운영 정책을 설정하세요.',
+  settings: '수수료, 한도, 출금 지급 방식, 적립 포인트 등 서비스 운영 정책을 설정하세요.',
   audit: '관리자의 처리·변경 이력을 확인하세요.',
-  profile: '관리자 정보와 프로필 캐릭터를 관리하세요.',
+  profile: '관리자 정보와 프로필 사진을 관리하세요.',
 };
 
 function overview(state, me) {
@@ -36,6 +37,8 @@ function overview(state, me) {
   const today = kstDay();
   const pendingEx = rows.filter(r => r.type === 'exchange' && r.status === 'pending');
   const pendingOut = rows.filter(r => r.type === 'withdrawal' && r.status === 'pending');
+  const transferring = rows.filter(r => r.type === 'withdrawal' && r.status === 'processing');
+  const failedOut = transferring.filter(r => r.payout?.status === 'failed');
   const couponToday = rows.filter(r => r.type === 'coupon' && kstDay(r.date) === today);
   const exSeries = series(rows.filter(r => r.type === 'exchange' && r.status !== 'canceled' && r.status !== 'rejected'), 14, r => r.points);
   const outSeries = series(rows.filter(r => r.type === 'withdrawal' && r.status !== 'canceled' && r.status !== 'rejected'), 14, r => r.points);
@@ -53,7 +56,8 @@ function overview(state, me) {
     secondReview && ['exchange', `2차 승인 대기 교환 ${secondReview}건 (고액·한도 초과)`, '#app/admin/requests', 'rejected'],
     pendingEx.length && ['exchange', `교환 심사 대기 ${pendingEx.length}건`, '#app/admin/requests', 'pending'],
     bankWaiting && ['bank', `계좌 인증 대기 ${bankWaiting}명`, '#app/admin/members', 'pending'],
-    pendingOut.length && ['bank', `출금 지급 대기 ${pendingOut.length}건 · ${format(pendingOut.reduce((s, r) => s + r.points - r.fee, 0))}원`, '#app/admin/payouts', 'pending'],
+    pendingOut.length && ['bank', `출금 심사 대기 ${pendingOut.length}건 · ${format(pendingOut.reduce((s, r) => s + r.points - r.fee, 0))}원`, '#app/admin/payouts', 'pending'],
+    failedOut.length && ['alert', `이체 실패 ${failedOut.length}건 · 재시도 또는 반려 필요`, '#app/admin/payouts', 'rejected'],
     openTickets && ['help', `답변 대기 문의 ${openTickets}건`, '#app/admin/support', 'pending'],
     lowStock.length && ['alert', `재고 부족 상품 ${lowStock.length}개 (${lowStock.slice(0, 2).map(p => escape(p.name)).join(', ')}${lowStock.length > 2 ? ' 외' : ''})`, '#app/admin/products', 'rejected'],
     state.settings.maintenance && ['settings', '점검 모드가 켜져 있습니다.', '#app/admin/settings', 'rejected'],
@@ -66,7 +70,7 @@ function overview(state, me) {
     <div class="card-grid metrics four">
       ${metric('전체 회원', format(users.filter(u => u.status !== 'deleted').length) + '명', 'users', `오늘 가입 ${users.filter(u => kstDay(u.createdAt) === today).length}명 · 정지 ${users.filter(u => u.status === 'suspended').length}명`, 0)}
       ${metric('교환 심사 대기', pendingEx.length + '건', 'exchange', `${format(pendingEx.reduce((s, r) => s + r.points, 0))} P 적립 예정`, 1)}
-      ${metric('출금 지급 대기', pendingOut.length + '건', 'bank', `${format(pendingOut.reduce((s, r) => s + r.points, 0))} P 처리 중`, 2)}
+      ${metric('출금 심사 대기', pendingOut.length + '건', 'bank', `${format(pendingOut.reduce((s, r) => s + r.points, 0))} P · 이체 중 ${transferring.length}건`, 2)}
       ${metric('7일 교환 적립', format(weekNow) + ' P', 'activity', `오늘 쿠폰 ${couponToday.length}건 판매`, 3, trend(weekNow, weekBefore))}
     </div>
     <div class="dash-grid two-one">
@@ -187,9 +191,92 @@ function settings(state) {
   const s = state.settings;
   const field = (name, label, hint) => `<div><label for="set-${name}">${label}</label><div class="amount-field"><input id="set-${name}" name="${name}" type="number" min="0" value="${s[name]}" required><span>P</span></div><small class="muted">${hint}</small></div>`;
   return `<form class="stack" data-form="settings"><section class="panel"><h2>출금 정책</h2><div class="field-grid three">${field('fee', '기본 출금 수수료', '등급별 할인율이 곱해집니다')}${field('withdrawalMinimum', '최소 출금 금액', '수수료보다 커야 합니다')}${field('dailyWithdrawLimit', '1인 일일 출금 한도', '신청 기준 합계')}</div></section>
+    <section class="panel"><div class="panel-head"><h2>출금 지급 방식</h2>${payoutBadge(state)}</div><div class="field-grid three">
+      <div><label for="set-payoutMode">지급 방식</label><select id="set-payoutMode" name="payoutMode"><option value="manual" ${s.payoutMode === 'api' ? '' : 'selected'}>수동 지급 (송금 후 완료 처리)</option><option value="api" ${s.payoutMode === 'api' ? 'selected' : ''}>지급대행 API (승인 시 자동 이체)</option></select><small class="muted">자동 이체는 지급대행 API 키가 필요합니다</small></div>
+      ${field('payoutAutoLimit', '자동 승인 한도', '이 금액 이하는 심사 없이 바로 이체 · 0이면 모두 심사')}</div>
+      <p class="muted small">${payoutNote(state)}</p></section>
     <section class="panel"><h2>적립 정책</h2><div class="field-grid three">${field('signupBonus', '회원가입 축하', '첫 교환 완료 시 지급')}${field('referralBonus', '추천 가입 보너스', '추천인·가입자 각각, 첫 교환 완료 시')}${field('attendancePoints', '출석체크', '하루 1회')}${field('attendanceBonus', '7일 연속 보너스', '7·14·21일째')}${field('giftMinimum', '최소 선물 금액', '회원 간 선물')}${field('dailyGiftLimit', '1인 하루 선물 한도', '보낸 선물 합계')}</div></section>
     <section class="panel"><h2>서비스 상태</h2><label class="switch"><input type="checkbox" name="maintenance" ${s.maintenance ? 'checked' : ''}><i></i>점검 모드 (메인 상단에 점검 안내 표시)</label></section>
     <div class="sticky-save"><button class="btn primary" type="submit">설정 저장 ${icon('check', 17)}</button>${state.server?.demo !== false ? `<button class="btn outline" type="button" data-action="reset-demo">${icon('refresh', 17)} 데모 데이터 초기화</button>` : ''}</div></form>`;
+}
+
+// ───────── 지급대행 상태 ─────────
+function payoutInfo(state) {
+  const server = state.server ?? { mode: 'demo' };
+  const live = !!server.payout?.live;
+  const name = server.mode === 'server' ? (server.payout?.provider || '') : '모의 지급대행';
+  return { api: state.settings.payoutMode === 'api', live, name, mock: !live && !!name, webhook: !!server.payout?.webhook, auto: state.settings.payoutAutoLimit };
+}
+function payoutBadge(state) {
+  const p = payoutInfo(state);
+  return !p.api ? pill('수동 지급') : p.live ? pill(escape(p.name) + ' 연동', 'complete') : pill('모의 지급대행', 'pending');
+}
+function payoutNote(state) {
+  const p = payoutInfo(state);
+  if (p.live) return `<b>${escape(p.name)}</b> API가 연결되어 있습니다. 승인한 출금은 자동으로 이체되고, 결과는 ${p.webhook ? '결과 통지(웹훅)와 상태 조회로' : '상태 조회로'} 반영됩니다.`;
+  if (p.mock) return '지급대행 API 키가 없어 <b>모의 지급대행</b>으로 흐름만 재현합니다(실제 송금 없음). 계약 후 <code>.env</code>에 <code>PAYOUT_API_URL</code>, <code>PAYOUT_API_KEY</code>를 넣으면 실제 이체로 바뀝니다.';
+  return '지급대행 API 키가 설정되지 않았습니다. 지금은 관리자가 직접 송금한 뒤 지급 완료로 처리합니다. 계약 후 <code>.env</code>에 <code>PAYOUT_API_URL</code>, <code>PAYOUT_API_KEY</code>를 넣으면 자동 이체를 켤 수 있습니다.';
+}
+
+function payouts(state, me, ui) {
+  const out = state.transactions.filter(r => r.type === 'withdrawal');
+  const net = r => r.points - (r.fee ?? 0);
+  const review = out.filter(r => r.status === 'pending');
+  const failed = out.filter(r => r.status === 'processing' && r.payout?.status === 'failed');
+  const moving = out.filter(r => r.status === 'processing' && r.payout?.status !== 'failed');
+  const done = out.filter(r => !['pending', 'processing'].includes(r.status));
+  const paid = out.filter(r => r.status === 'complete');
+  const p = payoutInfo(state);
+  const tab = ui.ptab || 'review';
+  const tabs = [['review', '심사 대기', review.length], ['moving', '이체 중', moving.length], ['failed', '이체 실패', failed.length], ['done', '처리 내역', done.length]];
+  const body = tab === 'review' ? pendingQueue(state, me, out, { approve: p.api ? '선택 승인 · 이체 요청' : '선택 지급 완료' })
+    : tab === 'moving' ? panel('지급대행 이체 중', table(state, moving, me, { showUser: true, showUpdate: true, empty: '이체 중인 출금이 없습니다.' }))
+    : tab === 'failed' ? panel('이체 실패 — 확인 필요', `<p class="muted small">지급대행사에서 이체 여부를 먼저 확인한 뒤 <b>재시도</b>, <b>수동 지급 완료</b>, <b>반려(포인트 복원)</b> 중에서 처리하세요. 재시도는 같은 거래번호로 요청해 중복 송금을 막습니다.</p>${table(state, failed, me, { showUser: true, showUpdate: true, empty: '이체 실패 건이 없습니다. 👏' })}`)
+    : `<section class="panel" data-csv><div class="panel-head"><h2>처리 내역</h2>${action('CSV', 'csv', 'data-name="출금내역"', 'btn outline sm', 'download')}</div>${table(state, done, me, { showUser: true, showUpdate: true })}</section>`;
+  return `<div class="notice-bar ${p.live ? 'ok' : ''}">${icon(p.api ? 'zap' : 'bank', 18)}<span><b>${p.api ? `지급대행 자동 이체${p.name ? ' · ' + escape(p.name) : ''}` : '수동 지급'}</b> ${p.api ? `승인하면 등록 계좌로 이체를 요청하고 입금이 확인되면 완료됩니다.${p.auto ? ` ${format(p.auto)} P 이하 신청은 자동 승인됩니다.` : ''}${p.mock ? ' (모의 지급대행: 실제 송금 없음)' : ''}` : '직접 송금한 뒤 지급 완료로 처리하세요.'} <a class="text-btn" href="#app/admin/settings">지급 설정</a></span></div>
+    <div class="summary-strip"><div><span>심사 대기</span><strong>${review.length}건</strong></div><div><span>지급 예정액</span><strong>${format([...review, ...moving, ...failed].reduce((s, r) => s + net(r), 0))}원</strong></div><div><span>이체 중</span><strong>${moving.length}건</strong></div><div><span>이체 실패</span><strong class="${failed.length ? 'minus' : ''}">${failed.length}건</strong></div><div><span>누적 지급</span><strong>${format(paid.reduce((s, r) => s + net(r), 0))}원</strong></div><div><span>수수료 수익</span><strong>${format(paid.reduce((s, r) => s + (r.fee ?? 0), 0))} P</strong></div></div>
+    <div class="tabs" role="tablist">${tabs.map(([id, label, count]) => `<button type="button" role="tab" class="tab ${tab === id ? 'active' : ''}" aria-selected="${tab === id}" data-action="ui" data-key="ptab" data-value="${id}">${label} <b>${count}</b></button>`).join('')}</div>
+    ${body}`;
+}
+
+// ───────── 통계 리포트 ─────────
+function report(state) {
+  const rows = state.transactions.filter(r => r.status === 'complete');
+  const users = state.accounts.filter(a => a.role === 'user');
+  const of = type => rows.filter(r => r.type === type);
+  const net = r => r.points - (r.fee ?? 0);
+  const total = (list, pick = r => r.points) => list.reduce((s, r) => s + pick(r), 0);
+  const months = 6;
+  const cols = {
+    signup: monthly(users.map(u => ({ date: u.createdAt })), months, () => 1),
+    exchange: monthly(of('exchange'), months, r => r.points),
+    payout: monthly(of('withdrawal'), months, net),
+    coupon: monthly(of('coupon'), months, r => r.points),
+    fee: monthly(of('withdrawal'), months, r => r.fee ?? 0),
+  };
+  const issued = total(rows.filter(r => direction(r) === 'in' && r.type !== 'gift_in'), r => Math.abs(r.points)); // 선물은 회원 간 이동이라 제외
+  const used = total(rows.filter(r => direction(r) === 'out' && !['gift_out'].includes(r.type)), r => Math.abs(r.points));
+  const liability = users.reduce((s, u) => { const b = balances(state, u.id); return s + b.available + b.reserved; }, 0);
+  const byGrade = grades.map(g => ({ label: g.name, color: g.color, value: users.filter(u => grade(state, u.id).id === g.id).length }));
+  const providerColors = { email: '#18563e', kakao: '#e5b800', naver: '#1faa55', google: '#4f6fbf', apple: '#333' };
+  const byProvider = Object.keys(providerColors).map(k => ({ label: providerName(k), color: providerColors[k], value: users.filter(u => u.provider === k).length })).filter(x => x.value);
+  const chart = cols.exchange.map((m, i) => ({ ...m, extra: cols.payout[i].value }));
+  return `<div class="card-grid metrics four">
+      ${metric('회원 보유 포인트', format(liability) + ' P', 'wallet', '지급 의무가 있는 포인트(부채)', 0)}
+      ${metric('누적 포인트 발행', format(issued) + ' P', 'star', `교환 ${format(total(of('exchange')))} P 포함`, 1)}
+      ${metric('누적 포인트 소진', format(used) + ' P', 'shop', `출금 ${format(total(of('withdrawal')))} P · 쿠폰 ${format(total(of('coupon')))} P`, 2)}
+      ${metric('누적 수수료 수익', format(total(of('withdrawal'), r => r.fee ?? 0)) + ' P', 'bank', `출금 ${of('withdrawal').length}건`, 3)}
+    </div>
+    <div class="dash-grid two-one">
+      ${panel('월별 교환 적립 · 출금 지급', barChart(chart, { stacked: true }) + '<div class="chart-legend"><span><i class="green"></i>교환 적립(P)</span><span><i class="extra"></i>출금 지급(원)</span></div>')}
+      ${panel('회원 등급 분포', donut(byGrade, `<strong>${users.length}</strong><small>회원</small>`))}
+    </div>
+    <div class="dash-grid two-one">
+      <section class="panel" data-csv><div class="panel-head"><h2>월별 집계 (최근 ${months}개월)</h2>${action('CSV', 'csv', 'data-name="월별리포트"', 'btn outline sm', 'download')}</div>
+        <div class="table-scroll"><table><thead><tr><th>월</th><th class="numeric">신규 가입</th><th class="numeric">교환 적립(P)</th><th class="numeric">출금 지급(원)</th><th class="numeric">쿠폰 판매(P)</th><th class="numeric">수수료 수익(P)</th></tr></thead>
+        <tbody>${cols.signup.map((m, i) => `<tr><td>${m.key}</td><td class="numeric">${m.value}명</td><td class="numeric">${format(cols.exchange[i].value)}</td><td class="numeric">${format(cols.payout[i].value)}</td><td class="numeric">${format(cols.coupon[i].value)}</td><td class="numeric">${format(cols.fee[i].value)}</td></tr>`).reverse().join('')}</tbody></table></div></section>
+      ${panel('가입 경로', donut(byProvider, `<strong>${users.length}</strong><small>회원</small>`))}
+    </div>`;
 }
 
 function audit(state, ui) {
@@ -220,6 +307,7 @@ function integrations(state) {
   const live = server.mode === 'server';
   const status = (ok, on = '연동됨', off = '데모') => pill(ok ? on : off, ok ? 'complete' : 'pending');
   const lastCall = id => (state.apiLogs ?? []).find(item => item.partner === id && item.source === 'partner-api');
+  const pay = payoutInfo(state);
   const rows = [
     ['server', '서비스 서버', live ? '서버 API · 파일 DB(data/db.json) · HttpOnly 세션 쿠키 · scrypt 비밀번호' : '브라우저 저장소로 동작 중 (GitHub Pages 등 정적 호스팅)', status(live, '서버 연결', '브라우저 데모')],
     ['users', '카카오 로그인', '.env의 KAKAO_CLIENT_ID / KAKAO_CLIENT_SECRET · Redirect URI: /auth/kakao/callback', status(server.oauth?.kakao)],
@@ -228,7 +316,7 @@ function integrations(state) {
     ['users', 'Apple 로그인', 'Apple Developer 서비스 ID와 키(.p8)로 client_secret(JWT) 생성 필요', status(false, '', '준비 중')],
     ['send', '웹하드 웹훅 발송', live ? (server.webhooks ? 'HMAC 서명 · 실패 시 최대 3회 재시도' : 'WEBHOOK_DELIVERY=off 로 꺼져 있음') : '서버 실행 시 동작', status(live && server.webhooks, '동작 중', '대기')],
     ['gift', '모바일 쿠폰 공급사', '기프티쇼 비즈 등 계약 후 상품 조회·발행·취소 API 연결 (현재 자체 발급 코드)', status(false, '', '계약 전')],
-    ['bank', '계좌 지급(펌뱅킹)', '현재 관리자가 출금 심사에서 지급 완료 처리 · 은행/PG 지급대행 API 계약 후 자동 이체', status(false, '', '수동 지급')],
+    ['bank', '출금 지급대행(펌뱅킹)', pay.live ? `${escape(pay.name)} API 연동 · 결과 통지 주소 /api/payout/webhook${pay.webhook ? '' : ' (PAYOUT_WEBHOOK_SECRET 미설정: 상태 조회로 확인)'}` : `.env의 PAYOUT_API_URL / PAYOUT_API_KEY 입력 시 자동 이체 · 현재 ${pay.api ? '모의 지급대행으로 흐름만 재현' : '관리자가 수동 지급'}`, status(pay.live, '연동됨', pay.api ? '모의' : '수동 지급')],
     ['bank', '계좌 1원 인증', live ? (server.bankVerify ? '.env의 BANK_VERIFY_URL로 1원 송금 요청 → 회원이 입금자명 숫자 입력' : 'BANK_VERIFY_URL 미설정 · 회원 관리에서 관리자가 명의 확인 후 승인') : '데모: 화면에 인증 숫자 표시', status(live && server.bankVerify, '연동됨', live ? '관리자 승인' : '데모')],
     ['shield', '본인 확인', '휴대폰 본인인증(PASS 등)으로 실명·명의 확인 (계약 후 가입 단계에 연결)', status(false, '', '계약 전')],
   ];
@@ -252,12 +340,8 @@ export function adminPage(state, me, page, ui, { profilePage, supportPage }) {
       return `<div class="tabs">${[['', '전체'], ...state.partners.map(p => [p.id, escape(p.name)])].map(([v, l]) => `<button type="button" class="tab ${(ui.partner ?? '') === v ? 'active' : ''}" data-action="ui" data-key="partner" data-value="${v}">${l} <b>${ex.filter(r => r.status === 'pending' && (!v || r.partner === v)).length}</b></button>`).join('')}</div>
         ${pendingQueue(state, me, ex.filter(r => !ui.partner || r.partner === ui.partner))}${panel('처리 내역', table(state, ex.filter(r => r.status !== 'pending' && (!ui.partner || r.partner === ui.partner)), me, { showUser: true, showUpdate: true }))}`;
     }
-    case 'payouts': {
-      const out = rows.filter(r => r.type === 'withdrawal');
-      const pend = out.filter(r => r.status === 'pending');
-      return `<div class="summary-strip"><div><span>지급 대기</span><strong>${pend.length}건</strong></div><div><span>지급 예정액</span><strong>${format(pend.reduce((s, r) => s + r.points - r.fee, 0))}원</strong></div><div><span>수수료 수익(누적)</span><strong>${format(out.filter(r => r.status === 'complete').reduce((s, r) => s + r.fee, 0))} P</strong></div><div><span>누적 지급</span><strong>${format(out.filter(r => r.status === 'complete').reduce((s, r) => s + r.points - r.fee, 0))}원</strong></div></div>
-        ${pendingQueue(state, me, out)}${panel('처리 내역', table(state, out.filter(r => r.status !== 'pending'), me, { showUser: true, showUpdate: true }))}`;
-    }
+    case 'payouts': return payouts(state, me, ui);
+    case 'report': return report(state);
     case 'transactions': return `${activityFilters(ui, ['exchange', 'withdrawal', 'coupon', 'attendance', 'reward', 'adjust', 'gift_out', 'gift_in', 'reversal'])}<section class="panel" data-csv>${table(state, applyFilters(state, rows, ui), me, { showUser: true, showUpdate: true })}</section>`;
     case 'products': return products(state);
     case 'orders': return orders(state, me);

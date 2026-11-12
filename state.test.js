@@ -306,3 +306,59 @@ test('입력값 검증·보안 난수·내부망 주소 판별', () => {
   const partnerView = S.snapshot(state, S.account(state, 'p1'));
   assert.ok(partnerView.accounts.slice(1).every(a => !a.provider && !a.createdAt && /\*/.test(a.name)), '제휴사에는 마스킹된 이름만');
 });
+
+test('출금 지급: 수동 지급, 지급대행 이체 흐름, 자동 승인, 실패 후 재시도·반려', () => {
+  const state = fresh();
+  const before = S.balances(state, 'u1').available;
+  // 수동 지급: 승인하면 바로 완료
+  state.settings.payoutMode = 'manual';
+  const manual = S.withdraw(state, 'u1', 5000);
+  S.update(state, 'a1', manual.id, 'complete');
+  assert.equal(manual.status, 'complete');
+  assert.equal(manual.payout.method, 'manual');
+  // 지급대행: 승인 → 이체 중 → 입금 완료
+  state.settings.payoutMode = 'api';
+  const row = S.withdraw(state, 'u1', 5000);
+  assert.equal(row.status, 'pending');
+  S.update(state, 'a1', row.id, 'complete');
+  assert.equal(row.status, 'processing');
+  assert.equal(row.payout.status, 'queued');
+  assert.equal(S.balances(state, 'u1').reserved, 5000, '이체 중에도 포인트는 묶여 있다');
+  assert.throws(() => S.update(state, 'u1', row.id, 'canceled'), /변경할 수 없습니다/, '이체 요청 후에는 취소할 수 없다');
+  assert.throws(() => S.setBank(state, 'u1', { bank: '신한은행', number: '1101234567', holder: '스마일 회원' }), /처리 중/);
+  assert.deepEqual(S.payoutRequest(state, row), { transferId: row.id, bank: '국민은행', bankCode: '004', accountNumber: '123401043070', holder: '스마일 회원', amount: 4600, memo: '스마일포인트' });
+  S.payoutSent(state, row.id, { ref: 'TK-1', provider: '테스트' });
+  assert.equal(row.payout.status, 'sent');
+  S.payoutResult(state, row.id, { ok: true, ref: 'TK-1' });
+  assert.equal(row.status, 'complete');
+  assert.equal(row.payout.status, 'paid');
+  assert.equal(S.balances(state, 'u1').available, before - 10000);
+  assert.throws(() => S.payoutResult(state, row.id, { ok: true }), /찾을 수 없습니다/, '같은 결과가 다시 와도 두 번 처리하지 않는다');
+  // 자동 승인 한도
+  state.settings.payoutAutoLimit = 6000;
+  const auto = S.withdraw(state, 'u1', 6000);
+  assert.equal(auto.status, 'processing');
+  assert.equal(S.withdraw(state, 'u1', 7000).status, 'pending', '한도 초과는 심사 대기');
+  // 실패 → 재시도 → 실패 → 반려(포인트 복원)
+  S.payoutResult(state, auto.id, { ok: false, error: '수취 계좌 오류' });
+  assert.equal(auto.status, 'processing');
+  assert.equal(auto.payout.status, 'failed');
+  assert.ok(state.notifications.some(n => n.to === 'admin' && /이체 실패/.test(n.text)));
+  assert.throws(() => S.retryPayout(state, 'u1', auto.id), /권한/);
+  S.retryPayout(state, 'a1', auto.id);
+  assert.equal(auto.payout.status, 'queued');
+  assert.equal(S.runMockPayouts(state), 1);
+  assert.equal(auto.status, 'complete', '모의 지급대행은 바로 입금 완료 처리');
+  const bad = S.withdraw(state, 'u1', 5000);
+  S.payoutResult(state, bad.id, { ok: false, error: '응답 없음' });
+  assert.throws(() => S.refundPayout(state, 'a1', bad.id, ''), /사유/);
+  const reserved = S.balances(state, 'u1').available;
+  S.refundPayout(state, 'a1', bad.id, '계좌 정보 오류');
+  assert.equal(bad.status, 'rejected');
+  assert.equal(S.balances(state, 'u1').available, reserved + 5000);
+  const hand = S.withdraw(state, 'u1', 5000);
+  S.payoutResult(state, hand.id, { ok: false, error: '점검' });
+  S.completePayoutManually(state, 'a1', hand.id);
+  assert.equal(hand.status, 'complete');
+  assert.equal(hand.payout.method, 'manual');
+});

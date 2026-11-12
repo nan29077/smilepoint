@@ -1,5 +1,5 @@
 import { animals, categories, config, escape, format, icon, providers } from '../catalog.js';
-import { account, statuses, types } from '../state.js';
+import { account, payoutLabels, statuses, types } from '../state.js';
 
 export const money = value => `${format(value)} <small>${config.point}</small>`;
 export const showDate = value => new Intl.DateTimeFormat('ko-KR', { timeZone: 'Asia/Seoul', dateStyle: 'medium' }).format(new Date(value));
@@ -22,10 +22,18 @@ export const partnerName = (state, id) => state.partners.find(item => item.id ==
 export const productName = (state, id) => state.products.find(item => item.id === id)?.name ?? '—';
 export const maskAccount = number => number ? '••••' + String(number).slice(-4) : '—';
 
+// 계정마다 동물 캐릭터 1종이 무작위로 정해진다 (가입 시 저장, 값이 없으면 계정 id로 고정 선택).
+export function animalIndex(profile) {
+  if (Number.isInteger(profile?.avatar) && animals[profile.avatar]) return profile.avatar;
+  let hash = 0;
+  for (const char of String(profile?.id ?? '')) hash = (hash * 31 + char.charCodeAt(0)) >>> 0;
+  return hash % animals.length;
+}
+// 직접 올린 사진이 있으면 사진, 없으면 동물 캐릭터를 보여 준다.
 export function avatar(profile, css = '') {
   const photo = /^data:image\/(?:jpeg|png|webp);base64,[a-z0-9+/=]+$/i.test(profile?.photo ?? '') ? profile.photo
     : /^\.\/api\/photo\/[\w-]+\?v=[a-f0-9]+$/.test(profile?.photoUrl ?? '') ? profile.photoUrl : '';
-  const index = Number.isInteger(profile?.avatar) && animals[profile.avatar] ? profile.avatar : 0;
+  const index = animalIndex(profile);
   return `<img class="avatar ${css}" src="${photo || './assets/animal-' + (index + 1) + '.jpg'}" alt="${photo ? '프로필 사진' : animals[index] + ' 캐릭터'}">`;
 }
 
@@ -77,6 +85,44 @@ export function barcode(text) {
   return `<svg class="barcode" viewBox="0 0 ${x} 40" preserveAspectRatio="none" aria-hidden="true">${rects}</svg>`;
 }
 
+// ───────── 진행 단계 ─────────
+// steps: [{ label, hint, state: 'done' | 'now' | 'todo' | 'bad' }]
+export function flow(steps) {
+  return `<ol class="flow">${steps.map(step => `<li class="${step.state}"><i>${step.state === 'done' ? icon('check', 13) : step.state === 'bad' ? icon('alert', 13) : ''}</i><strong>${step.label}</strong>${step.hint ? `<small>${step.hint}</small>` : ''}</li>`).join('')}</ol>`;
+}
+export function withdrawalFlow(row, viewer) {
+  if (['rejected', 'canceled'].includes(row.status)) return '';
+  const stage = row.status === 'pending' ? 1 : row.status === 'processing' ? 2 : 3;
+  const failed = row.status === 'processing' && row.payout?.status === 'failed';
+  const state = index => index < stage ? 'done' : index === stage ? (failed ? 'bad' : 'now') : 'todo';
+  return flow([
+    { label: '신청', hint: showTime(row.date), state: 'done' },
+    { label: '심사', hint: stage > 1 ? (row.handler === 'auto' ? '자동 승인' : '승인') : '확인 중', state: state(1) },
+    { label: '계좌 이체', hint: stage < 2 ? '' : stage > 2 ? (row.payout?.method === 'manual' ? '수동 지급' : '이체 완료') : failed ? (viewer?.role === 'admin' ? '이체 실패' : '확인 중') : payoutLabels[row.payout?.status] ?? '이체 중', state: state(2) },
+    { label: '입금 완료', hint: stage > 2 ? showTime(row.payout?.paidAt ?? row.updated ?? row.date) : '', state: stage > 2 ? 'done' : 'todo' },
+  ]);
+}
+export function exchangeFlow(row) {
+  if (['rejected', 'canceled'].includes(row.status)) return '';
+  const done = row.status === 'complete';
+  return flow([
+    { label: '신청', hint: showTime(row.date), state: 'done' },
+    { label: '제휴사 확인', hint: done ? '승인' : '확인 중', state: done ? 'done' : 'now' },
+    { label: '적립 완료', hint: done && row.updated ? showTime(row.updated) : '', state: done ? 'done' : 'todo' },
+  ]);
+}
+export function statusPill(row, viewer) {
+  if (row.type === 'withdrawal' && row.status === 'processing') {
+    const failed = row.payout?.status === 'failed';
+    return failed && viewer?.role === 'admin' ? pill('이체 실패', 'rejected') : pill(failed ? '이체 확인 중' : '이체 중', 'processing');
+  }
+  if (row.type === 'withdrawal' && row.status === 'pending') return pill('심사 대기', 'pending');
+  if (row.status === 'pending' && row.partnerApproved) return pill(viewer?.role === 'user' ? '승인 진행 중' : '2차 승인 대기', 'pending');
+  if (row.reversed) return pill('회수됨', 'rejected');
+  return pill(statuses[row.status] ?? row.status, row.status);
+}
+const needsAction = (row, viewer) => viewer.role !== 'user' && (row.status === 'pending' || (viewer.role === 'admin' && row.status === 'processing' && row.payout?.status === 'failed'));
+
 // ───────── 상품 ─────────
 const categoryArt = { 카페: 'coffee', 외식: 'shop', 편의점: 'store', 디저트: 'cake', 문화: 'film', 상품권: 'card' };
 export function productVisual(item) {
@@ -115,11 +161,6 @@ export function transactionLabel(state, row) {
 const signed = row => (['exchange', 'attendance', 'reward', 'gift_in'].includes(row.type) || (row.type === 'adjust' && row.points > 0) ? '+' : '−') + format(Math.abs(row.points)) + ' P';
 
 // 거래 상태 배지: 2차 승인 대기·회수 여부까지 표시한다.
-export function statusPill(row, viewer) {
-  if (row.status === 'pending' && row.partnerApproved) return pill(viewer?.role === 'user' ? '승인 진행 중' : '2차 승인 대기', 'pending');
-  if (row.reversed) return pill('회수됨', 'rejected');
-  return pill(statuses[row.status] ?? row.status, row.status);
-}
 // 긴 목록은 처음 limit건만 그리고 '더 보기'로 늘린다 (ui.more).
 export const pageSize = ui => ui?.more === 'all' ? Infinity : Math.max(50, Number(ui?.more) || 50);
 let currentLimit = 50;
@@ -136,12 +177,14 @@ export function table(state, rows, viewer, { actions = true, showUpdate = false,
       ${showUser ? `<td>${escape(account(state, row.userId)?.name ?? '—')}</td>` : ''}<td>${showTime(row.date)}</td>
       <td class="numeric ${signed(row)[0] === '+' ? 'plus' : 'minus'}">${signed(row)}</td><td>${statusPill(row, viewer)}</td>
       ${showUpdate ? `<td>${row.updated ? showTime(row.updated) : '—'}</td>` : ''}
-      ${actions ? `<td><button type="button" class="text-btn" data-action="transaction" data-id="${row.id}">${row.status === 'pending' && viewer.role !== 'user' ? '처리' : '상세'} ${icon('chevron', 15)}</button></td>` : ''}</tr>`).join('')}</tbody></table></div>${moreButton(total, named.length)}`;
+      ${actions ? `<td><button type="button" class="text-btn" data-action="transaction" data-id="${row.id}">${needsAction(row, viewer) ? '처리' : '상세'} ${icon('chevron', 15)}</button></td>` : ''}</tr>`).join('')}</tbody></table></div>${moreButton(total, named.length)}`;
 }
 
 export function details(state, row, viewer) {
   const owner = account(state, row.userId);
-  return `<div class="form-summary"><div><span>거래번호</span><strong>${escape(row.id)}</strong></div><div><span>거래 유형</span><strong>${types[row.type]}</strong></div>
+  const staff = viewer?.role === 'admin';
+  const pay = row.type === 'withdrawal' ? row.payout : null;
+  return `${row.type === 'withdrawal' ? withdrawalFlow(row, viewer) : row.type === 'exchange' ? exchangeFlow(row) : ''}<div class="form-summary"><div><span>거래번호</span><strong>${escape(row.id)}</strong></div><div><span>거래 유형</span><strong>${types[row.type]}</strong></div>
     <div><span>회원</span><strong>${escape(owner?.name ?? '—')}</strong></div>
     <div><span>거래 내용</span><strong>${transactionLabel(state, row.counterpart ? { ...row, counterpartName: account(state, row.counterpart)?.name } : row)}</strong></div>
     ${row.type === 'exchange' ? `<div><span>교환 비율</span><strong>${row.rate}:1</strong></div>` : ''}
@@ -152,6 +195,10 @@ export function details(state, row, viewer) {
     ${row.partnerApproved && row.status === 'pending' ? `<div><span>2차 승인 사유</span><strong>${escape(row.review ?? '')}</strong></div>` : ''}
     ${row.ref ? `<div><span>원 거래</span><strong>${escape(row.ref)}</strong></div>` : ''}
     ${row.reversed ? `<div><span>회수</span><strong>${showTime(row.reversed.at)} · ${escape(row.reversed.reason)}</strong></div>` : ''}
+    ${pay ? `<div><span>지급 방식</span><strong>${pay.method === 'manual' ? '수동 지급' : '지급대행 자동 이체'}${staff && pay.provider ? ' · ' + escape(pay.provider) : ''}</strong></div>` : ''}
+    ${pay && staff && pay.ref ? `<div><span>이체 거래번호</span><strong>${escape(pay.ref)}</strong></div>` : ''}
+    ${pay && staff && pay.status === 'failed' ? `<div><span>이체 오류</span><strong class="minus">${escape(pay.error ?? '이체 실패')}</strong></div>` : ''}
+    ${pay?.paidAt ? `<div><span>입금 일시</span><strong>${showTime(pay.paidAt)}</strong></div>` : ''}
     ${row.updated ? `<div><span>처리 일시</span><strong>${showTime(row.updated)}</strong></div>` : ''}
     ${row.reason ? `<div><span>${row.type === 'coupon' ? '취소 사유' : '반려 사유'}</span><strong>${escape(row.reason)}</strong></div>` : ''}
     ${row.memo && !['gift_out', 'gift_in'].includes(row.type) ? '' : row.memo ? `<div><span>메시지</span><strong>${escape(row.memo)}</strong></div>` : ''}

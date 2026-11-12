@@ -1,5 +1,5 @@
 import { clean, dispatch } from './actions.js';
-import { animals, config, escape, format, icon, providers, socialMark } from './catalog.js';
+import { config, escape, format, icon, providers, socialMark } from './catalog.js';
 import * as S from './state.js';
 import { memberDetail, partnerForm, productForm } from './views/admin.js';
 import { dashboard, pages, pageTitle } from './views/dashboard.js';
@@ -54,7 +54,21 @@ async function act(op, payload = {}) {
   const result = dispatch(next, next.session?.accountId ?? null, op, payload, { demo: true });
   S.save(next);
   state = withServer(next);
+  scheduleMockPayouts();
   return clean(result) ?? result;
+}
+// 데모 모드(서버 없음): 승인된 출금을 모의 지급대행이 3초 뒤 입금 완료로 처리한다.
+let mockTimer;
+function scheduleMockPayouts() {
+  if (live() || mockTimer || !S.payoutQueue(state).length) return;
+  mockTimer = setTimeout(() => {
+    mockTimer = null;
+    const next = S.load();
+    if (!S.runMockPayouts(next)) return;
+    S.save(next);
+    state = withServer(next);
+    if (!busy()) render(true);
+  }, 3000);
 }
 const withServer = value => Object.assign(value, { server });
 async function boot() {
@@ -65,7 +79,7 @@ async function boot() {
       state = withServer((await api('./api/state')).state);
     }
   } catch {}
-  if (!live()) { try { S.save(state); } catch {} withServer(state); }
+  if (!live()) { try { S.save(state); } catch {} withServer(state); scheduleMockPayouts(); }
   render();
   clearInterval(pollTimer);
   if (live()) pollTimer = setInterval(poll, 15000);
@@ -241,12 +255,16 @@ function transactionDialog(id) {
   const viewer = me();
   const row = S.visibleTransactions(state, viewer).find(item => item.id === id);
   if (!row) return;
-  const options = [['complete', row.type === 'withdrawal' ? '지급 완료' : '승인'], ['rejected', '반려'], ['canceled', '신청 취소']].filter(([status]) => S.canUpdate(row, viewer, status));
+  const api = state.settings.payoutMode === 'api';
+  const options = [['complete', row.type === 'withdrawal' ? (api ? '승인 · 이체 요청' : '지급 완료') : '승인'], ['rejected', '반려'], ['canceled', '신청 취소']].filter(([status]) => S.canUpdate(row, viewer, status));
+  const failedPayout = viewer.role === 'admin' && row.type === 'withdrawal' && row.status === 'processing' && row.payout?.status === 'failed';
   const couponCancel = viewer.role === 'admin' && row.type === 'coupon' && row.status === 'complete' && !row.coupon?.used;
   const reversible = row.type === 'exchange' && row.status === 'complete' && !row.reversed && (viewer.role === 'admin' || (viewer.role === 'partner' && Date.now() - new Date(row.updated ?? row.date) <= 30 * 86400000));
   dialog('거래 상세', `${details(state, row, viewer)}
     ${viewer.role === 'admin' && row.type === 'withdrawal' && row.status === 'pending' ? `<div class="dialog-actions" data-payout-box><button class="btn outline sm" type="button" data-action="payout-account" data-id="${row.id}">${icon('eye', 16)}지급 계좌번호 확인</button><small class="muted">열람 기록이 감사 기록에 남습니다.</small></div>` : ''}
     ${reversible ? `<details class="danger-zone"><summary>교환 회수</summary><p class="muted small">판매 취소·부정 적립 등으로 이 교환의 스마일 포인트 ${format(row.points)} P를 회원에게서 회수합니다. 이미 사용했다면 잔액이 마이너스가 될 수 있습니다.</p><label for="reverse-reason" class="small-label">회수 사유 <small class="muted">(회원에게 안내됩니다)</small></label><input id="reverse-reason" maxlength="100" placeholder="예: 판매 취소로 웹하드 포인트 환원"><div class="dialog-actions"><button class="btn danger sm" type="button" data-action="reverse" data-id="${row.id}">회수하기</button></div></details>` : ''}
+    ${failedPayout ? `<p class="muted small">지급대행사에서 이 거래번호(<b>${row.id}</b>)의 이체 여부를 먼저 확인하세요. 재시도는 같은 거래번호로 요청합니다.</p><label for="reject-reason" class="small-label">반려 사유 <small class="muted">(반려 시 필수 · 포인트가 복원됩니다)</small></label><input id="reject-reason" maxlength="100" placeholder="예: 계좌 정보 오류로 이체 불가">
+      <div class="dialog-actions"><button class="btn primary" type="button" data-action="payout-retry" data-id="${row.id}">이체 재시도</button><button class="btn outline" type="button" data-action="payout-manual" data-id="${row.id}">수동 지급 완료</button><button class="btn danger" type="button" data-action="payout-refund" data-id="${row.id}">반려·포인트 복원</button></div>` : ''}
     ${couponCancel ? `<label for="reject-reason" class="small-label">취소 사유 <small class="muted">(회원에게 안내됩니다)</small></label><input id="reject-reason" maxlength="100" placeholder="예: 공급사 품절로 발행 불가"><div class="dialog-actions"><button class="btn danger" type="button" data-action="coupon-cancel-confirm" data-id="${row.id}">주문 취소·환불</button></div>` : ''}
     ${options.some(([s]) => s === 'rejected') ? `<label for="reject-reason" class="small-label">반려 사유 <small class="muted">(반려 시 필수)</small></label><input id="reject-reason" maxlength="100" placeholder="예: 판매 포인트 정산 보류">` : ''}
     <div class="dialog-actions">${options.map(([status, label]) => `<button class="btn ${status === 'complete' ? 'primary' : status === 'rejected' ? 'danger' : 'outline'}" type="button" data-action="status" data-id="${row.id}" data-value="${status}">${label}</button>`).join('')}
@@ -276,12 +294,8 @@ function downloadCsv(scope, name) {
   notify('CSV 파일을 내려받았습니다.');
 }
 
-async function setAvatar(index) {
-  const viewer = me();
-  if (!viewer || !animals[index]) return;
-  const profile = await act('setAvatar', { index });
-  refresh(profile.photo ? '캐릭터를 저장했어요. 지금은 올린 사진이 우선 표시됩니다.' : `${animals[index]} 캐릭터로 바꿨어요.`);
-}
+// 서버 모드: 이체 결과가 곧 반영되므로 잠시 뒤 한 번 더 받아 온다.
+function followPayouts() { if (live()) { setTimeout(poll, 4000); setTimeout(poll, 9000); } }
 
 // ───────── 클릭 동작 ─────────
 async function onAction(event) {
@@ -367,9 +381,14 @@ async function onAction(event) {
     case 'status': {
       const reason = document.getElementById('reject-reason')?.value ?? '';
       const row = await act(value === 'canceled' ? 'cancel' : 'review', { id, status: value, reason });
-      refresh(row?.status === 'pending' && row?.partnerApproved ? `승인했습니다. ${row.review} 건이라 운영팀 2차 승인 후 적립됩니다.` : value === 'complete' ? '처리를 완료했습니다. 회원에게 알림을 보냈어요.' : value === 'rejected' ? '신청을 반려했습니다.' : '신청을 취소했습니다. 포인트가 복원되었어요.');
+      refresh(row?.status === 'pending' && row?.partnerApproved ? `승인했습니다. ${row.review} 건이라 운영팀 2차 승인 후 적립됩니다.` : row?.status === 'processing' ? '승인했습니다. 지급대행사에 이체를 요청했어요.' : value === 'complete' ? '처리를 완료했습니다. 회원에게 알림을 보냈어요.' : value === 'rejected' ? '신청을 반려했습니다.' : '신청을 취소했습니다. 포인트가 복원되었어요.');
+      if (row?.status === 'processing') followPayouts();
       break;
     }
+    case 'payout-retry': await act('retryPayout', { id }); refresh('이체를 다시 요청했습니다.'); followPayouts(); break;
+    case 'payout-manual': await act('completePayout', { id }); refresh('수동 지급 완료로 처리했습니다. 회원에게 알림을 보냈어요.'); break;
+    case 'payout-refund': await act('refundPayout', { id, reason: document.getElementById('reject-reason')?.value ?? '' }); refresh('출금을 반려하고 포인트를 복원했습니다.'); break;
+    case 'read-all': await act('readAll'); refresh('알림을 모두 읽음으로 표시했습니다.'); break;
     case 'bulk': {
       const ids = [...trigger.closest('[data-bulk]').querySelectorAll('[data-select]:checked')].map(box => box.value);
       if (!ids.length) { notify('처리할 신청을 선택해 주세요.'); break; }
@@ -380,6 +399,7 @@ async function onAction(event) {
       const done = await act('bulkReview', { ids, status: 'complete' });
       const held = state.transactions.filter(row => ids.includes(row.id) && row.status === 'pending' && row.partnerApproved).length;
       refresh(held && viewer.role === 'partner' ? `${done}건을 승인했습니다. 이 중 ${held}건은 고액·한도 초과로 운영팀 2차 승인 후 적립됩니다.` : `${done}건을 승인했습니다.`);
+      followPayouts();
       break;
     }
     case 'attend': {
@@ -450,9 +470,7 @@ async function onAction(event) {
       break;
     }
     case 'close': modal.close(); break;
-    case 'avatar': setAvatar(Number(id)); break;
-    case 'random-avatar': setAvatar((viewer.avatar + 1 + Math.floor(Math.random() * (animals.length - 1))) % animals.length); break;
-    case 'remove-photo': await act('setPhoto', { photo: '' }); refresh('프로필 사진을 삭제했어요. 동물 캐릭터가 표시됩니다.'); break;
+    case 'remove-photo': await act('setPhoto', { photo: '' }); refresh('프로필 사진을 삭제했어요. 다시 동물 캐릭터가 표시됩니다.'); break;
   }
 }
 
@@ -594,7 +612,7 @@ async function submitForm(form, kind) {
       case 'exchange': await act('exchange', { partnerId: form.dataset.id, amount }); refresh('교환을 신청했습니다. 승인되면 알림으로 알려 드릴게요.'); break;
       case 'link': { const sent = await act('linkPartner', { partnerId: form.dataset.id, loginId: data.loginId }); refresh(); linkVerifyDialog(form.dataset.id, sent?.code ?? ''); notify('인증번호를 보냈습니다. 웹하드에서 확인해 주세요.'); break; }
       case 'link-confirm': { const link = await act('confirmLink', { partnerId: form.dataset.id, code: data.code }); refresh(link.balance === null ? '연결 완료! 교환 가능 포인트는 제휴사 승인 시 확인합니다.' : `연결 완료! 교환 가능 ${format(link.balance)} P를 불러왔어요.`); break; }
-      case 'withdrawal': await act('withdraw', { amount }); refresh('출금을 신청했습니다. 승인 후 다음 영업일에 입금됩니다.'); break;
+      case 'withdrawal': { const row = await act('withdraw', { amount }); refresh(row?.status === 'processing' ? '출금을 신청했습니다. 바로 계좌 이체를 요청했어요.' : state.settings.payoutMode === 'api' ? '출금을 신청했습니다. 승인되면 등록 계좌로 자동 이체됩니다.' : '출금을 신청했습니다. 승인 후 다음 영업일에 입금됩니다.'); if (row?.status === 'processing') followPayouts(); break; }
       case 'bank': { const sent = await act('setBank', data); delete ui.bankEdit; refresh(sent?.code ? `데모: 1원 입금자명은 '스마일${sent.code}'입니다. 숫자 4자리를 입력하세요.` : '1원을 보냈습니다. 입금자명의 숫자 4자리를 입력해 주세요.'); break; }
       case 'bank-confirm': await act('confirmBank', { code: data.code }); refresh('계좌 인증이 완료되었습니다.'); break;
       case 'totp-enable': await act('enableTotp', { code: data.code }); refresh('2단계 인증을 켰습니다. 다음 로그인부터 코드를 입력합니다.'); break;

@@ -3,6 +3,7 @@
 // - /api/*      : 로그인 세션(HttpOnly 쿠키) 기반 서비스 API. 데이터는 data/db.json에 저장한다.
 // - /api/v1/*   : 웹하드 제휴사 서버용 API (X-Api-Key 인증)
 // - /auth/*     : 카카오·네이버·구글 OAuth (.env에 키가 있을 때만 동작)
+// - /api/payout/webhook : 지급대행사의 이체 결과 통지 (payout.mjs)
 import { createHash, createHmac, randomBytes, scryptSync, timingSafeEqual } from 'node:crypto';
 import { lookup } from 'node:dns';
 import { createReadStream, existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs';
@@ -13,6 +14,7 @@ import { extname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { clean, dispatch, ops } from './actions.js';
 import { testPassword } from './catalog.js';
+import { createPayoutProvider } from './payout.mjs';
 import * as S from './state.js';
 
 const root = fileURLToPath(new URL('.', import.meta.url));
@@ -31,6 +33,7 @@ const webhookDelivery = (env.WEBHOOK_DELIVERY ?? 'on') !== 'off';
 const proxyHops = env.TRUST_PROXY === 'on' ? Math.max(1, Number(env.TRUST_PROXY_HOPS) || 1) : 0;
 const sessionDays = 7;
 if (demo && !loopback) console.warn('\n[보안 경고] 외부에서 접속할 수 있는 주소에서 데모 모드가 켜져 있습니다. 누구나 테스트 계정(최고 관리자 포함)으로 로그인할 수 있습니다. 운영 전 DEMO_MODE=off로 바꾸세요.\n');
+const payout = createPayoutProvider(env, { demo }); // 실제 지급대행 | 모의(데모) | null(운영 모드에서 미설정)
 
 // ───────── 비밀번호: scrypt ─────────
 S.security.hash = text => {
@@ -118,6 +121,10 @@ else {
     if (existing) { Object.assign(existing, { role: 'admin', status: 'active', password: hash }); delete existing.locked; delete existing.totp; revokeAtBoot.add(existing.id); }
     else db.accounts.push({ id: 'a' + Date.now().toString(36), role: 'admin', name: '서비스 운영자', email, phone: '', provider: 'email', status: 'active', createdAt: new Date().toISOString(), password: hash, avatar: 0, photo: '' });
   }
+}
+if (db.settings.payoutMode === 'api' && !payout) {
+  db.settings.payoutMode = 'manual';
+  console.warn('[지급대행] PAYOUT_API_URL / PAYOUT_API_KEY가 없어 출금 지급 방식을 수동으로 되돌렸습니다.');
 }
 function initialAdminPassword() {
   if (env.ADMIN_PASSWORD && env.ADMIN_PASSWORD !== testPassword) return env.ADMIN_PASSWORD;
@@ -427,6 +434,88 @@ async function requestBankTransfer(account, request) {
   }
 }
 
+// ───────── 지급대행 이체 ─────────
+// 승인된 출금(이체 요청 대기)을 지급대행사로 보내고 결과를 원장에 반영한다.
+let paying = false;
+async function processPayouts() {
+  if (paying || !payout) return;
+  paying = true;
+  try {
+    if (payout.mock) { if (S.runMockPayouts(db)) persist(); return; }
+    let changed = false;
+    const apply = (id, result) => {
+      if (result.state === 'paid') S.payoutResult(db, id, { ok: true, ref: result.ref, provider: payout.name });
+      else if (result.state === 'failed') S.payoutResult(db, id, { ok: false, ref: result.ref, provider: payout.name, error: result.error });
+      else return false;
+      return true;
+    };
+    for (const { id } of S.payoutQueue(db).slice(0, 10)) {
+      const row = db.transactions.find(item => item.id === id);
+      const request = S.payoutRequest(db, row);
+      changed = true;
+      if (!request?.bankCode) { S.payoutResult(db, id, { ok: false, provider: payout.name, error: '출금 계좌를 확인할 수 없음' }); continue; }
+      try {
+        const result = await payout.transfer(request);
+        if (!apply(id, result)) S.payoutSent(db, id, { ref: result.ref, provider: payout.name });
+      } catch (error) {
+        // 응답을 받지 못하면 송금 여부를 알 수 없다. 자동으로 다시 보내지 않고 관리자가 확인하게 한다.
+        console.error('[지급대행] 이체 요청 실패:', id, error.message);
+        try { S.payoutResult(db, id, { ok: false, provider: payout.name, error: '응답 없음 · 지급대행사에서 이체 여부 확인 필요' }); } catch {}
+      }
+    }
+    // 접수 후 1분이 지나도 결과 통지가 없으면 상태를 조회한다.
+    const waiting = db.transactions.filter(row => row.type === 'withdrawal' && row.status === 'processing' && row.payout?.status === 'sent'
+      && Date.now() - Date.parse(row.payout.sentAt) > 60000 && Date.now() - (row.payout.checkedAt ?? 0) > 60000).slice(0, 10);
+    for (const { id } of waiting) {
+      try {
+        const result = await payout.status({ transferId: id });
+        const row = db.transactions.find(item => item.id === id);
+        if (row?.payout?.status !== 'sent') continue;
+        row.payout.checkedAt = Date.now();
+        apply(id, result);
+        changed = true;
+      } catch (error) { console.error('[지급대행] 상태 조회 실패:', id, error.message); }
+    }
+    if (changed) persist();
+  } catch (error) { console.error('[지급대행]', error); }
+  finally { paying = false; }
+}
+setInterval(processPayouts, 10000).unref();
+const schedulePayouts = () => { if (payout && S.payoutQueue(db).length) setTimeout(processPayouts, payout.mock ? 3000 : 0).unref(); };
+schedulePayouts();
+
+// 지급대행사의 이체 결과 통지. 서명이 맞을 때만 반영하고, 같은 통지가 여러 번 와도 한 번만 처리한다.
+function readRaw(request, limit = 64 * 1024) {
+  return new Promise((resolve, reject) => {
+    let size = 0; const chunks = [];
+    request.on('data', chunk => { size += chunk.length; if (size > limit) { reject(new S.AppError('요청이 너무 큽니다.', 413)); request.destroy(); } else chunks.push(chunk); });
+    request.on('end', () => resolve(Buffer.concat(chunks).toString('utf8')));
+    request.on('error', reject);
+  });
+}
+async function handlePayoutWebhook(request, response) {
+  if (request.method !== 'POST' || !payout?.live) return json(response, 404, { error: 'not_found' });
+  const raw = await readRaw(request);
+  if (!payout.verifyWebhook(raw, request.headers['x-payout-signature'])) return json(response, 401, { error: 'invalid_signature' });
+  let data;
+  try { data = JSON.parse(raw); } catch { return json(response, 400, { error: 'invalid_json' }); }
+  const event = payout.parseWebhook(data);
+  const row = db.transactions.find(item => item.id === event.transferId && item.type === 'withdrawal');
+  if (!row) return json(response, 404, { error: 'unknown_transfer' });
+  if (row.status === 'rejected' && event.state === 'paid' && !row.payout?.lateNotice) {
+    // 이미 반려(포인트 복원)한 출금이 실제로는 송금된 경우: 관리자가 바로 알 수 있게 한다.
+    row.payout = { ...row.payout, lateNotice: true, ref: event.ref || row.payout?.ref };
+    S.notify(db, 'admin', `주의: 반려한 출금 ${row.id}이(가) 지급대행사에서는 송금 완료로 통지되었습니다. 회원 포인트를 확인해 주세요.`, 'app/admin/payouts');
+    persist();
+  }
+  if (row.status !== 'processing' || event.state === 'accepted') return json(response, 200, { ok: true, status: row.status });
+  // 실패로 기록된 뒤 늦게 도착한 성공 통지도 반영한다 (응답 없음 → 실제로는 송금된 경우).
+  if (row.payout?.status === 'failed' && event.state === 'failed') return json(response, 200, { ok: true, status: row.status });
+  S.payoutResult(db, row.id, { ok: event.state === 'paid', ref: event.ref, provider: payout.name, error: event.error });
+  persist();
+  return json(response, 200, { ok: true, status: row.status });
+}
+
 // ───────── 서비스 API ─────────
 // 스냅샷의 프로필 사진은 주소로 바꿔 보낸다 (관리자 화면이 모든 회원 사진을 매번 받지 않도록).
 function view(viewer) {
@@ -460,7 +549,8 @@ async function deliverResetMail(account, link) {
   if (!demo) { S.notify(db, 'admin', `비밀번호 재설정 요청: ${account.email} (메일 발송 설정이 없어 서버 로그에 링크를 남겼습니다)`, 'app/admin/integrations'); persist(); }
 }
 function health() {
-  return { ok: true, mode: 'server', demo, version: 2, oauth: Object.fromEntries(Object.keys(oauth).map(key => [key, !!oauth[key]])), webhooks: webhookDelivery, mail: !!env.MAIL_WEBHOOK_URL, bankVerify: !!env.BANK_VERIFY_URL, time: new Date().toISOString() };
+  return { ok: true, mode: 'server', demo, version: 2, oauth: Object.fromEntries(Object.keys(oauth).map(key => [key, !!oauth[key]])), webhooks: webhookDelivery, mail: !!env.MAIL_WEBHOOK_URL, bankVerify: !!env.BANK_VERIFY_URL,
+    payout: { provider: payout?.name ?? '', live: !!payout?.live, mock: !!payout?.mock, webhook: !!payout?.webhook }, time: new Date().toISOString() };
 }
 const sessionOps = { changePassword: 1, resetPassword: 1, setStaffStatus: 1, setMemberStatus: 1, resetWithToken: 1, deleteAccount: 1 };
 async function handleApi(request, response, url) {
@@ -488,6 +578,7 @@ async function handleApi(request, response, url) {
       if (Date.now() - (recent.get(key) ?? 0) < 3000) return json(response, 409, { error: '같은 요청이 방금 처리되었습니다. 결과를 확인해 주세요.' });
       recent.set(key, Date.now());
     }
+    if (op === 'updateSettings' && payload.payoutMode === 'api' && !payout) return json(response, 400, { error: '지급대행 API 키(PAYOUT_API_URL, PAYOUT_API_KEY)가 설정되지 않아 자동 이체를 켤 수 없습니다.' });
     db.session = null;
     backup = JSON.stringify(db); // 처리 중 오류가 나면 이 시점으로 되돌린다 (동기 처리라 다른 요청과 섞이지 않음)
     let result;
@@ -527,6 +618,7 @@ async function handleApi(request, response, url) {
       result = { sent: true, ...(demo && link ? { link } : {}) };
     }
     if (db.webhooks?.some(item => item.status === 'queued')) setImmediate(deliverWebhooks);
+    schedulePayouts();
     const plain = typeof result === 'string' && ['resetPassword', 'regenerateKey'].includes(op) ? result : op === 'requestReset' ? result : clean(result);
     return json(response, 200, { result: plain, state: view(next) }, headers);
   } catch (error) {
@@ -567,6 +659,7 @@ const server = createServer(async (request, response) => {
   try { url = new URL(request.url, 'http://localhost'); path = decodeURIComponent(url.pathname); } catch { response.writeHead(400).end(); return; }
   try {
     if (url.pathname.startsWith('/api/v1/')) return await handlePartnerApi(request, response, url);
+    if (url.pathname === '/api/payout/webhook') return await handlePayoutWebhook(request, response);
     if (url.pathname.startsWith('/api/')) return await handleApi(request, response, url);
     if (url.pathname.startsWith('/auth/')) return await handleOAuth(request, response, url);
     serveStatic(request, response, path);
@@ -581,6 +674,7 @@ server.listen(port, host, () => {
   console.log(`  데이터: ${dbFile}`);
   console.log(`  데모 모드: ${demo ? '켜짐 (테스트 계정 로그인 가능)' : '꺼짐 (운영 모드)'}`);
   console.log(`  소셜 로그인: ${Object.entries(oauth).map(([k, v]) => `${k}=${v ? '연동' : '미설정'}`).join(', ')}`);
+  console.log(`  출금 지급: ${payout ? payout.name + (payout.live ? ' (API 연동)' : ' (데모)') : '수동 지급 (지급대행 미설정)'}`);
 });
 
 function loadEnv(file) {
