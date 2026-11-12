@@ -2,10 +2,28 @@ import { animals, announcements, config, escape, faq, format, icon, partners, pr
 import { balances, partnerAvailable, fee, roleTransactions, statuses, types, withdrawalMinimum } from './state.js';
 
 export const slides = [
-  { image: 'hero', label: '포인트 교환', title: ['흩어진 포인트,', '한곳에 모으세요.'], copy: '제휴 웹하드 포인트를 모아 계좌로 출금하거나\n모바일 쿠폰으로 교환해 보세요.', button: '포인트 교환하기', page: 'exchange' },
-  { image: 'withdraw', label: '계좌 출금', title: ['받을 금액과 일정을', '한눈에 확인하세요.'], copy: '신청하기 전에 수수료와 실수령액을 확인하고\n내 계좌로 포인트를 출금해 보세요.', button: '출금 방법 보기', page: 'withdrawal' },
-  { image: 'coupons', label: '포인트 쇼핑', title: ['모은 포인트로', '오늘의 선물을.'], copy: '커피부터 외식, 편의점 쿠폰까지.\n가지고 있는 포인트로 골라보세요.', button: '포인트 쇼핑', page: 'shop' },
+  { image: 'hero-exchange-v2', label: '포인트 교환', title: ['흩어진 포인트,', '한곳에 모으세요.'], copy: '제휴 웹하드 포인트를 모아 계좌로 출금하거나\n모바일 쿠폰으로 교환해 보세요.', button: '포인트 교환하기', page: 'exchange' },
+  { image: 'hero-withdraw-v2', label: '계좌 출금', title: ['받을 금액과 일정을', '한눈에 확인하세요.'], copy: '신청 전에 수수료와 실수령액을 확인하고\n계좌로 출금하는 과정을 체험해 보세요.', button: '출금 방법 보기', page: 'withdrawal' },
+  { image: 'hero-shop-v2', label: '포인트 쇼핑', title: ['모은 포인트로', '오늘의 선물을.'], copy: '커피부터 외식, 편의점 쿠폰까지.\n가지고 있는 포인트로 골라보세요.', button: '포인트 쇼핑', page: 'shop' },
 ];
+
+const stories = {
+  exchange: {
+    image: 'story-exchange', label: '포인트 교환 예시', title: '교환 신청 전에 받을 포인트를 확인하세요.',
+    copy: '제휴사마다 교환 비율이 다릅니다. 교환 신청 화면에서 받을 금액을 먼저 확인하고, 승인 전에는 내 지갑에서 적립 예정 금액을 볼 수 있어요.',
+    button: '내 교환 금액 확인하기', href: '#login/exchange',
+  },
+  withdrawal: {
+    image: 'story-withdraw', label: '계좌 출금 안내', title: '수수료를 빼면 얼마를 받을까요?',
+    copy: '출금할 포인트를 입력하면 예상 실수령액이 표시됩니다. 신청한 뒤에는 거래 내역에서 심사와 지급 상태를 확인할 수 있어요.',
+    button: '출금 화면 체험하기', href: '#login/withdrawal',
+  },
+  shop: {
+    image: 'story-shop', label: '모바일 쿠폰 이용법', title: '오늘 고른 쿠폰은 내 쿠폰함에.',
+    copy: '상품에 필요한 포인트를 확인하고 구매하면 쿠폰함에 발급 내역이 표시됩니다. 카페, 외식, 편의점 중 필요한 상품부터 둘러보세요.',
+    button: '포인트로 쿠폰 구매 체험', href: '#login/shop',
+  },
+};
 
 const quick = [
   ['exchange','exchange','포인트 교환','웹하드 포인트를 한곳으로'],
@@ -78,14 +96,14 @@ function header() {
 
 function footer() {
   return `<footer class="site-footer"><div class="container footer-top">${brand()}
-    <nav aria-label="하단 메뉴"><a href="#partners">제휴사</a><a href="#guide">이용 안내</a><a href="#support">고객센터</a><a href="#login">체험 로그인</a></nav>
+    <nav aria-label="하단 메뉴"><a href="#partners">제휴사</a><a href="#withdraw">계좌 출금</a><a href="#shop">포인트 쇼핑</a><a href="#guide">이용 안내</a><a href="#support">고객센터</a><a href="#login">체험 로그인</a></nav>
     </div><div class="container footer-bottom"><span>${config.name} · 체험 서비스</span><span>© ${config.english}</span></div></footer>`;
 }
 
 export function hero(index) {
   const slide = slides[index];
-  return `<div class="hero-split hero-${slide.image}">
-    <div class="hero-image"><img src="./assets/${slide.image}.jpg" alt="" fetchpriority="high"></div>
+  return `<div class="hero-split hero-${slide.page}">
+    <div class="hero-image"><img src="./assets/${slide.image}.jpg" alt="" width="1320" height="880" fetchpriority="high"></div>
     <div class="container hero-inner"><div class="hero-copy" aria-live="polite">
       <span class="hero-kicker"><i></i>${slide.label}</span>
       <h1>${slide.title[0]}<br><em>${slide.title[1]}</em></h1>
@@ -127,7 +145,54 @@ export function filteredProducts(category) {
   return products.filter(item => category === '전체' || item.category === category).map(productCard).join('');
 }
 
+function storyBanner(key, detail) {
+  const story = stories[key];
+  return `<article class="story-banner story-${key}">
+    <div class="story-image"><img src="./assets/${story.image}.jpg" alt="" width="1020" height="680" loading="lazy" decoding="async"></div>
+    <div class="story-copy"><span class="eyebrow">${story.label}</span><h2>${story.title}</h2><p>${story.copy}</p>
+      ${detail}${button(story.button, story.href, 'btn primary')}
+    </div>
+  </article>`;
+}
+
+function withdrawalGuide() {
+  const exampleAmount = 10000;
+  const terms = [
+    ['최소 신청 금액', format(withdrawalMinimum) + ' P'],
+    ['건당 수수료', format(fee) + ' P'],
+    ['예상 입금일', '승인 후 다음 영업일'],
+  ];
+  return `<section class="section cash-section" id="withdraw" aria-label="계좌 출금"><div class="container">
+    ${storyBanner('withdrawal', `<div class="story-example"><span>${format(exampleAmount)} P 출금 예시</span><strong>${format(exampleAmount - fee)}원 실수령</strong></div>`)}
+    <dl class="cash-terms">${terms.map(([label, value]) => `<div><dt>${label}</dt><dd>${value}</dd></div>`).join('')}</dl>
+    <p class="section-note">위 금액과 일정은 체험 기준이며 실제로 입금되지 않습니다.</p>
+  </div></section>`;
+}
+
+function usageGuide() {
+  const steps = [
+    ['layers', '제휴사 선택', '제휴사 카드에서 교환할 포인트 종류와 최소 신청 금액을 확인하세요.'],
+    ['exchange', '교환 신청', '받을 포인트를 확인하고 신청하세요. 승인 전에는 적립 예정으로 표시됩니다.'],
+    ['gift', '출금 또는 쇼핑', '적립이 완료되면 계좌 출금과 모바일 쿠폰 쇼핑에 쓸 수 있어요.'],
+  ];
+  const states = [
+    ['clock', '적립 예정', '교환을 신청하고 제휴사 승인을 기다리는 포인트예요.'],
+    ['wallet', '사용 가능', '지금 출금하거나 모바일 쿠폰을 구매할 수 있는 포인트예요.'],
+    ['bank', '처리 중', '이미 출금을 신청해 지급 결과를 기다리는 포인트예요.'],
+  ];
+  return `<section class="section container" id="guide">
+    <div class="section-head">${heading('이용 안내', '교환부터 사용까지, 세 단계', '제휴사를 선택하고 교환이 끝나면 원하는 방법으로 사용하세요.')}</div>
+    <ol class="card-grid steps">${steps.map(([glyph, title, copy], index) => `<li class="step"><span class="feature-icon tone-${index}">${icon(glyph)}</span><small>0${index + 1}</small><h3>${title}</h3><p>${copy}</p></li>`).join('')}</ol>
+    <div class="wallet-guide"><div class="wallet-guide-title"><span class="eyebrow">내 지갑</span><h3>잔액은 이렇게 표시돼요</h3></div>
+      <div class="wallet-states">${states.map(([glyph, title, copy]) => `<div>${icon(glyph, 20)}<div><strong>${title}</strong><p>${copy}</p></div></div>`).join('')}</div>
+    </div>
+  </section>`;
+}
+
 export function landing(index) {
+  const examplePartner = partners[0];
+  const exampleSource = 12000;
+  const example = `<div class="story-example"><span>${examplePartner.name} ${format(exampleSource)} P</span><strong>스마일 ${format(exampleSource / examplePartner.divisor)} P 적립</strong></div>`;
   return `${header()}<main id="main">
     <section id="hero" aria-label="스마일 포인트 소개">${hero(index)}</section>
     <div class="quick-wrap"><div class="container quick-grid">${quick.map(([page, glyph, label, copy], i) => `<a class="quick-card" href="#login/${page}">
@@ -135,15 +200,14 @@ export function landing(index) {
     <section class="section container" id="partners">
       <div class="section-head">${heading('제휴 포인트', '포인트를 가져올 수 있는 곳', '웹하드별 교환 비율과 최소 신청 금액을 먼저 확인하세요.')}${button('교환 체험하기', '#login/exchange', 'btn outline')}</div>
       ${partnerCards(null, 'public')}<p class="section-note">화면에 표시된 제휴사는 체험용 예시입니다.</p>
+      <div class="section-story">${storyBanner('exchange', example)}</div>
     </section>
+    ${withdrawalGuide()}
     <section class="shopping section" id="shop"><div class="container">
       <div class="section-head">${heading('포인트 쇼핑', '오늘은 어떤 선물을 고를까요?', '커피 한 잔부터 간식과 외식까지, 모은 포인트로 고를 수 있어요.')}${button('쇼핑 체험하기', '#login/shop', 'btn outline')}</div>${productCards()}
+      <div class="section-story">${storyBanner('shop', '<p class="story-note">체험용 쿠폰은 실제 매장에서 사용할 수 없습니다.</p>')}</div>
     </div></section>
-    <section class="section container" id="guide">
-      <div class="section-head">${heading('이용 안내', '교환부터 사용까지, 세 단계', '신청한 거래는 내 지갑에서 확인할 수 있어요.')}</div>
-      <div class="card-grid steps">${[['01','layers','제휴사 선택','교환할 웹하드와 포인트 종류를 확인하세요.'],['02','exchange','포인트 교환','받을 스마일 포인트를 확인하고 신청하세요.'],['03','gift','포인트 사용','적립이 완료되면 출금하거나 쿠폰을 구매하세요.']].map(([n, glyph, title, copy]) => `<article class="step"><span class="feature-icon tone-0">${icon(glyph)}</span><small>${n}</small><h3>${title}</h3><p>${copy}</p></article>`).join('')}</div>
-      <div class="policy-banner" id="withdraw"><div><span class="eyebrow">계좌 출금 안내</span><h3>입금 전에 받는 금액을 확인하세요.</h3><p>체험 기준 최소 5,000 P · 수수료 500 P · 승인 후 다음 영업일 예정</p></div>${button('출금 체험하기', '#login/withdrawal', 'btn lime')}</div>
-    </section>
+    ${usageGuide()}
     <section class="help-section section" id="support"><div class="container">
       <div class="section-head">${heading('고객센터', '무엇을 도와드릴까요?', '이용 중 궁금한 점을 확인하거나 체험 문의를 남겨 보세요.')}${button('문의하기', '#login/support', 'btn outline')}</div>
       <div class="help-grid"><div class="panel"><h3>자주 묻는 질문</h3>${faqList()}</div><div class="panel"><h3>공지사항</h3>${announcementList()}</div></div>
@@ -268,7 +332,12 @@ function pageContent(state, role, page) {
     case 'members': return `<div class="card-grid">${Object.entries(roles).map(([id, data]) => `<section class="panel member-card">${avatar(state.profiles[id])}<h2>${escape(state.profiles[id].name)}</h2><p>${data.name}</p></section>`).join('')}</div>`;
     case 'partners': return partnerCards(state, 'admin');
     case 'support': return supportPage(state, role);
-    case 'content': return `<div class="card-grid">${slides.map(slide => `<article class="panel content-card"><img src="./assets/${slide.image}.jpg" alt=""><h2>${slide.title.join(' ')}</h2><p>${slide.label}</p></article>`).join('')}</div><section class="panel"><h2>공지사항</h2>${announcementList()}</section>`;
+    case 'content': {
+      const bannerCards = items => `<div class="card-grid">${items.map(({ image, title, label }) => `<article class="panel content-card"><img src="./assets/${image}.jpg" alt="" loading="lazy"><h3>${title}</h3><p>${label}</p></article>`).join('')}</div>`;
+      return `<section class="panel"><h2>메인 배너</h2>${bannerCards(slides.map(slide => ({ ...slide, title: slide.title.join(' ') })))}</section>
+        <section class="panel"><h2>본문 배너</h2>${bannerCards(Object.values(stories))}</section>
+        <section class="panel"><h2>공지사항</h2>${announcementList()}</section>`;
+    }
     case 'audit': return `<section class="panel"><h2>거래 처리 기록</h2>${table(rows, role, { showUpdate: true })}</section>`;
     case 'profile': return profilePage(state.profiles[role]);
     default: return '';
