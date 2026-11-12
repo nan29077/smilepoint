@@ -4,9 +4,9 @@ import { legalBody, legalDocs } from './legal.js';
 import { announcementList, avatar, brand, button, faqList, heading, productCards } from './ui.js';
 
 export const slides = [
-  { image: 'hero-exchange-v2', label: '포인트 교환', title: ['흩어진 포인트,', '한곳에 모으세요.'], copy: '여러 웹하드에 쌓인 포인트를 스마일 포인트로 모아\n계좌로 출금하거나 모바일 쿠폰으로 바꿔 보세요.', button: '포인트 교환하기', page: 'exchange' },
-  { image: 'hero-withdraw-v2', label: '계좌 출금', title: ['받을 금액과 일정을', '한눈에 확인하세요.'], copy: '신청 전에 수수료와 실수령액을 미리 보고\n본인 명의 계좌로 안전하게 받아 보세요.', button: '출금 신청하기', page: 'withdrawal' },
-  { image: 'hero-shop-v2', label: '포인트 쇼핑', title: ['모은 포인트로', '오늘의 선물을.'], copy: '커피부터 외식, 편의점, 영화 관람권까지.\n가지고 있는 포인트로 바로 골라 보세요.', button: '쿠폰 쇼핑하기', page: 'shop' },
+  { image: 'hero-exchange-v2', mobileImage: 'hero-exchange-mobile-v3', label: '포인트 교환', title: ['흩어진 포인트,', '한곳에 모으세요.'], copy: '여러 웹하드에 쌓인 포인트를 스마일 포인트로 모아\n계좌로 출금하거나 모바일 쿠폰으로 바꿔 보세요.', button: '포인트 교환하기', page: 'exchange' },
+  { image: 'hero-withdraw-v2', mobileImage: 'hero-withdraw-mobile-v3', label: '계좌 출금', title: ['받을 금액과 일정을', '한눈에 확인하세요.'], copy: '신청 전에 수수료와 실수령액을 미리 보고\n본인 명의 계좌로 안전하게 받아 보세요.', button: '출금 신청하기', page: 'withdrawal' },
+  { image: 'hero-shop-v2', mobileImage: 'hero-shop-mobile-v3', label: '포인트 쇼핑', title: ['모은 포인트로', '오늘의 선물을.'], copy: '커피부터 외식, 편의점, 영화 관람권까지.\n가지고 있는 포인트로 바로 골라 보세요.', button: '쿠폰 쇼핑하기', page: 'shop' },
 ];
 
 const stories = {
@@ -60,7 +60,10 @@ export function footer(state) {
 export function hero(index) {
   const slide = slides[index];
   return `<div class="hero-split hero-${slide.page}">
-    <div class="hero-image"><img src="./assets/${slide.image}.jpg" alt="" width="1320" height="880" fetchpriority="high"></div>
+    <div class="hero-image"><picture>
+      <source media="(max-width: 760px)" srcset="./assets/${slide.mobileImage}.jpg" width="900" height="1200">
+      <img src="./assets/${slide.image}.jpg" alt="" width="1320" height="880" fetchpriority="high">
+    </picture></div>
     <div class="container hero-inner"><div class="hero-copy" aria-live="polite">
       <span class="hero-kicker"><i></i>${slide.label}</span>
       <h1>${slide.title[0]}<br><em>${slide.title[1]}</em></h1>
