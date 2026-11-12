@@ -30,9 +30,9 @@ p { line-height: 1.65; word-break: keep-all; }
 .container { width: min(1200px, calc(100% - 96px)); margin-inline: auto; }
 .site-header { position: relative; z-index: 3; background: #fff; border-bottom: 1px solid #e9eee9; }
 .header-inner { min-height: 78px; display: flex; align-items: center; justify-content: space-between; gap: 24px; }
-.brand { display: inline-flex; align-items: center; gap: 10px; line-height: 1.18; font-size: 21px; letter-spacing: -.07em; font-weight: 900; white-space: nowrap; color: #283c79; }
+.brand { display: inline-flex; align-items: center; gap: 10px; line-height: 1.18; font-size: 21px; letter-spacing: -.07em; font-weight: 900; white-space: nowrap; }
 .brand img { flex-shrink: 0; }
-.brand small { display: block; margin-top: 4px; color: #4b5d82; font: 700 9px/1.1 "Atkinson Hyperlegible Next", Arial, sans-serif; letter-spacing: .17em; }
+.brand small { display: block; margin-top: 4px; color: #52675a; font: 700 9px/1.1 "Atkinson Hyperlegible Next", Arial, sans-serif; letter-spacing: .17em; }
 .site-nav, .header-actions { display: flex; align-items: center; gap: clamp(15px, 3vw, 42px); }
 .site-nav a { font-size: 15px; font-weight: 750; white-space: nowrap; }
 .site-nav a:hover, .login-link:hover { color: #24734f; }

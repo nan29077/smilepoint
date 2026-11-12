@@ -16,7 +16,7 @@ export const button = (label, href, css = 'btn primary', glyph = 'arrow') => `<a
 export const action = (label, name, attrs = '', css = 'btn primary', glyph = '') => `<button type="button" class="${css}" data-action="${name}" ${attrs}>${glyph ? icon(glyph, 17) : ''}${label}</button>`;
 export const heading = (eyebrow, title, copy) => `<div class="section-title"><span class="eyebrow">${eyebrow}</span><h2>${title}</h2><p>${copy}</p></div>`;
 export const blank = (message, glyph = 'inbox') => `<div class="empty">${icon(glyph, 28)}<p>${message}</p></div>`;
-export const brand = () => `<a class="brand" href="#home"><img src="./assets/smile-loop.svg" alt="" width="40" height="40"><span>${config.name}<small>${config.english}</small></span></a>`;
+export const brand = () => `<a class="brand" href="#home"><img src="./assets/smile.svg" alt="" width="40" height="40"><span>${config.name}<small>${config.english}</small></span></a>`;
 export const providerName = id => providers[id]?.name ?? '이메일';
 export const partnerName = (state, id) => state.partners.find(item => item.id === id)?.name ?? '—';
 export const productName = (state, id) => state.products.find(item => item.id === id)?.name ?? '—';
