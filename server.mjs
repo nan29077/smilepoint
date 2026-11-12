@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url';
 
 const root = fileURLToPath(new URL('.', import.meta.url));
 const port = 3070;
-const rootFiles = new Set(['/index.html', '/styles.css', '/app.js', '/catalog.js', '/state.js', '/views.js']);
+const rootFiles = new Set(['/index.html', '/styles.css', '/app.js', '/catalog.js', '/state.js']);
 const contentTypes = {
   '.html': 'text/html; charset=utf-8', '.css': 'text/css; charset=utf-8', '.js': 'text/javascript; charset=utf-8',
   '.svg': 'image/svg+xml', '.jpg': 'image/jpeg', '.webp': 'image/webp', '.png': 'image/png', '.woff2': 'font/woff2',
@@ -24,7 +24,7 @@ const server = createServer((request, response) => {
     return;
   }
   if (path === '/') path = '/index.html';
-  const permitted = rootFiles.has(path) || /^\/assets\/[a-z0-9][a-z0-9-]*\.(svg|jpg|webp|png|woff2)$/.test(path);
+  const permitted = rootFiles.has(path) || /^\/views\/[a-z]+\.js$/.test(path) || /^\/assets\/[a-z0-9][a-z0-9-]*\.(svg|jpg|webp|png|woff2)$/.test(path);
   const file = join(root, path.slice(1));
   if (!permitted || !existsSync(file) || !statSync(file).isFile()) {
     response.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' }).end('페이지를 찾을 수 없습니다.');
