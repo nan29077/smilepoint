@@ -788,7 +788,8 @@ form.stack[data-form="settings"] { gap: 16px; align-items: stretch; }
   .quick-grid.four { grid-template-columns: repeat(4, minmax(0, 1fr)); }
   .stats-grid, .grade-strip { grid-template-columns: repeat(2, 1fr); }
   .cta-inner { flex-direction: column; align-items: flex-start; }
-  .header-login { display: none; }
+  .header-actions { gap: 6px; }
+  .header-login, .header-cta { min-height: 34px; padding: 7px 11px; font-size: 12.5px; }
   .header-actions .icon-btn[data-action="logout"] { display: none; }
   .dash-grid.three { grid-template-columns: 1fr; }
   .card-grid.two { grid-template-columns: 1fr; }
@@ -835,3 +836,9 @@ th.numeric, td.numeric { text-align: right; }
 .create-box[open] summary { margin-bottom: 14px; }
 .row-actions { display: flex; gap: 12px; }
 @media (max-width: 760px) { .mode-badge { display: none; } }
+@media (max-width: 380px) {
+  .header-inner { gap: 8px; }
+  .header-actions { gap: 4px; }
+  .header-login, .header-cta { padding: 6px 9px; font-size: 12px; }
+  .brand small { display: none; }
+}
