@@ -7,18 +7,20 @@ import { action, announcementList, avatar, barChart, blank, button, donut, maskA
 
 export const adminMenu = [
   ['대시보드', [['overview', 'home', '운영 개요']]],
-  ['회원·제휴', [['members', 'users', '회원 관리'], ['partners', 'layers', '제휴사 관리']]],
+  ['회원·제휴', [['members', 'users', '회원 관리'], ['partners', 'layers', '제휴사 관리'], ['staff', 'key', '운영진 계정']]],
   ['거래 심사', [['requests', 'exchange', '교환 심사'], ['payouts', 'bank', '출금 심사'], ['transactions', 'file', '전체 거래']]],
   ['쇼핑', [['products', 'gift', '쿠폰 상품'], ['orders', 'shop', '쿠폰 주문']]],
-  ['운영', [['settlement', 'chart', '정산 및 대사'], ['support', 'help', '고객센터'], ['content', 'megaphone', '배너·공지'], ['settings', 'settings', '운영 설정'], ['audit', 'shield', '감사 기록']]],
+  ['운영', [['settlement', 'chart', '정산 및 대사'], ['support', 'help', '고객센터'], ['content', 'megaphone', '배너·공지'], ['integrations', 'link', '연동 관리'], ['settings', 'settings', '운영 설정'], ['audit', 'shield', '감사 기록']]],
 ];
 export const adminDescriptions = {
   members: '회원을 검색하고 잔액, 연결 계정, 거래를 확인하세요. 포인트 조정과 이용 정지를 할 수 있습니다.',
-  partners: '제휴 웹하드별 교환 비율, 최소 금액과 운영 상태를 관리하세요.',
+  partners: '제휴 웹하드를 등록하고 교환 비율, 최소 금액과 운영 상태를 관리하세요.',
+  staff: '웹하드 관리자·최고 관리자 계정을 만들고 정지하거나 비밀번호를 초기화하세요.',
+  integrations: '소셜 로그인, 웹하드 API, 쿠폰 공급사, 계좌 지급 등 외부 연동 상태를 확인하세요.',
   requests: '모든 제휴사의 교환 신청을 심사하세요.',
   payouts: '출금 신청을 확인하고 지급 또는 반려하세요. 여러 건을 한 번에 처리할 수 있습니다.',
   transactions: '서비스 전체 거래 원장을 조회하세요.',
-  products: '모바일 쿠폰 상품의 판매 포인트, 재고, 판매 상태를 관리하세요.',
+  products: '모바일 쿠폰 상품을 등록하고 판매 포인트, 재고, 판매 상태를 관리하세요.',
   orders: '쿠폰 주문과 사용 현황을 확인하세요.',
   settlement: '제휴사별 교환 완료 내역과 정산 금액을 대사하세요.',
   support: '회원 1:1 문의에 답변하세요.',
@@ -107,7 +109,11 @@ export function memberDetail(state, me, id) {
 }
 
 function partners(state) {
-  return `<div class="card-grid partner-grid two">${state.partners.map(p => {
+  return `<details class="panel create-box"><summary>${icon('plus', 18)} 새 제휴사 등록</summary><form class="stack" data-form="partner-create">
+    <div class="field-grid three"><div><label for="pc-name">제휴사 이름</label><input id="pc-name" name="name" required maxlength="20" placeholder="예: 스카이파일"></div><div><label for="pc-type">교환 대상</label><input id="pc-type" name="type" maxlength="20" placeholder="판매 적립"></div><div><label for="pc-approval">안내 승인 시간</label><input id="pc-approval" name="approval" maxlength="20" placeholder="평균 1일"></div>
+    <div><label for="pc-div">교환 비율 (제휴 P : 1)</label><input id="pc-div" name="divisor" type="number" min="1" max="20" value="2" required></div><div><label for="pc-min">최소 신청 금액</label><input id="pc-min" name="min" type="number" min="1" value="2000" required></div></div>
+    <p class="muted small">등록하면 API 키가 발급되고 <b>일시 중지</b> 상태로 시작합니다. 연동 테스트를 마친 뒤 정책 수정에서 운영을 켜세요.</p><button class="btn primary sm" type="submit">등록</button></form></details>
+    <div class="card-grid partner-grid two">${state.partners.map(p => {
     const rows = state.transactions.filter(r => r.partner === p.id);
     const done = rows.filter(r => r.status === 'complete');
     const manager = state.accounts.find(a => a.role === 'partner' && a.partnerId === p.id);
@@ -127,7 +133,11 @@ export function partnerForm(p) {
 }
 
 function products(state) {
-  return `<section class="panel" data-csv><div class="panel-head"><h2>상품 ${state.products.length}종</h2>${action('CSV', 'csv', 'data-name="쿠폰상품"', 'btn outline sm', 'download')}</div><div class="table-scroll"><table><thead><tr><th>상품</th><th>분류</th><th class="numeric">판매 포인트</th><th class="numeric">재고</th><th class="numeric">판매 수</th><th>상태</th><th><span class="sr-only">관리</span></th></tr></thead>
+  return `<details class="panel create-box"><summary>${icon('plus', 18)} 새 상품 등록</summary><form class="stack" data-form="product-create">
+    <div class="field-grid three"><div><label for="pr-name">상품명</label><input id="pr-name" name="name" required maxlength="40"></div><div><label for="pr-brand">브랜드</label><input id="pr-brand" name="brand" required maxlength="20"></div><div><label for="pr-cat">분류</label><select id="pr-cat" name="category">${['카페', '외식', '편의점', '디저트', '문화', '상품권'].map(c => `<option>${c}</option>`).join('')}</select></div>
+    <div><label for="pr-cost">판매 포인트</label><input id="pr-cost" name="cost" type="number" min="100" required></div><div><label for="pr-stock">재고</label><input id="pr-stock" name="stock" type="number" min="0" value="100" required></div></div>
+    <p class="muted small">쿠폰 공급사 API를 연동하면 상품 코드와 공급 단가를 함께 저장하도록 확장합니다.</p><button class="btn primary sm" type="submit">등록</button></form></details>
+    <section class="panel" data-csv><div class="panel-head"><h2>상품 ${state.products.length}종</h2>${action('CSV', 'csv', 'data-name="쿠폰상품"', 'btn outline sm', 'download')}</div><div class="table-scroll"><table><thead><tr><th>상품</th><th>분류</th><th class="numeric">판매 포인트</th><th class="numeric">재고</th><th class="numeric">판매 수</th><th>상태</th><th><span class="sr-only">관리</span></th></tr></thead>
     <tbody>${state.products.map(p => `<tr><td><div class="cell-user"><span class="thumb">${productVisual(p)}</span><span><strong>${escape(p.name)}</strong><small>${escape(p.brand)}</small></span></div></td><td>${p.category}</td><td class="numeric">${format(p.cost)}</td><td class="numeric ${p.stock < 30 ? 'minus' : ''}">${format(p.stock)}</td><td class="numeric">${state.transactions.filter(r => r.product === p.id).length}</td><td>${pill(p.active ? '판매 중' : '판매 중지', p.active ? 'complete' : 'canceled')}</td><td>${action('수정', 'product-edit', `data-id="${p.id}"`, 'text-btn')}</td></tr>`).join('')}</tbody></table></div></section>`;
 }
 export function productForm(p) {
@@ -160,7 +170,7 @@ function settings(state) {
   return `<form class="stack" data-form="settings"><section class="panel"><h2>출금 정책</h2><div class="field-grid three">${field('fee', '기본 출금 수수료', '등급별 할인율이 곱해집니다')}${field('withdrawalMinimum', '최소 출금 금액', '수수료보다 커야 합니다')}${field('dailyWithdrawLimit', '1인 일일 출금 한도', '신청 기준 합계')}</div></section>
     <section class="panel"><h2>적립 정책</h2><div class="field-grid three">${field('signupBonus', '회원가입 축하', '가입 즉시 지급')}${field('referralBonus', '추천 가입 보너스', '추천인·가입자 각각')}${field('attendancePoints', '출석체크', '하루 1회')}${field('attendanceBonus', '7일 연속 보너스', '7·14·21일째')}${field('giftMinimum', '최소 선물 금액', '회원 간 선물')}</div></section>
     <section class="panel"><h2>서비스 상태</h2><label class="switch"><input type="checkbox" name="maintenance" ${s.maintenance ? 'checked' : ''}><i></i>점검 모드 (메인 상단에 점검 안내 표시)</label></section>
-    <div class="sticky-save"><button class="btn primary" type="submit">설정 저장 ${icon('check', 17)}</button><button class="btn outline" type="button" data-action="reset-demo">${icon('refresh', 17)} 데모 데이터 초기화</button></div></form>`;
+    <div class="sticky-save"><button class="btn primary" type="submit">설정 저장 ${icon('check', 17)}</button>${state.server?.demo !== false ? `<button class="btn outline" type="button" data-action="reset-demo">${icon('refresh', 17)} 데모 데이터 초기화</button>` : ''}</div></form>`;
 }
 
 function audit(state, ui) {
@@ -170,12 +180,53 @@ function audit(state, ui) {
     <section class="panel" data-csv>${list.length ? `<div class="table-scroll"><table><thead><tr><th>일시</th><th>관리자</th><th>작업</th><th>대상</th><th>내용</th></tr></thead><tbody>${list.map(item => `<tr><td>${showTime(item.date)}</td><td>${escape(account(state, item.actor)?.name ?? item.actor)}</td><td>${pill(escape(item.action))}</td><td>${escape(item.target)}</td><td class="wrap">${escape(item.detail)}</td></tr>`).join('')}</tbody></table></div>` : blank('기록이 없습니다.')}</section>`;
 }
 
+function staff(state, me) {
+  const list = state.accounts.filter(a => a.role !== 'user');
+  const roleName = a => a.role === 'admin' ? '최고 관리자' : (state.partners.find(p => p.id === a.partnerId)?.name ?? '') + ' 담당자';
+  return `<div class="dash-grid two-one"><section class="panel" data-csv><div class="panel-head"><h2>운영진 ${list.length}명</h2>${action('CSV', 'csv', 'data-name="운영진"', 'btn outline sm', 'download')}</div>
+    <div class="table-scroll"><table><thead><tr><th>계정</th><th>역할</th><th>상태</th><th>최근 로그인</th><th><span class="sr-only">관리</span></th></tr></thead><tbody>${list.map(a => `<tr><td><div class="cell-user">${avatar(a, 'sm')}<span><strong>${escape(a.name)}${a.id === me.id ? ' <small class="muted">(나)</small>' : ''}</strong><small>${escape(a.email)}</small></span></div></td><td>${pill(roleName(a), a.role === 'admin' ? 'p-apple' : 'p-google')}</td><td>${pill(a.status === 'active' ? '활성' : '정지', a.status === 'active' ? 'complete' : 'rejected')}</td><td>${a.lastLogin ? showTime(a.lastLogin) : '—'}</td>
+      <td class="row-actions">${a.id === me.id ? '' : `${action(a.status === 'active' ? '정지' : '활성화', 'staff-status', `data-id="${a.id}" data-value="${a.status === 'active' ? 'suspended' : 'active'}"`, 'text-btn')}${action('비밀번호 초기화', 'reset-password', `data-id="${a.id}"`, 'text-btn')}`}</td></tr>`).join('')}</tbody></table></div></section>
+    <section class="panel"><h2>운영진 계정 만들기</h2><form class="stack" data-form="staff-create">
+      <label for="st-role">역할</label><select id="st-role" name="role" data-toggle-partner><option value="partner">웹하드 관리자</option><option value="admin">최고 관리자</option></select>
+      <div data-partner-field class="stack"><label for="st-partner">담당 제휴사</label><select id="st-partner" name="partnerId">${state.partners.map(p => `<option value="${p.id}">${p.name}</option>`).join('')}</select></div>
+      <label for="st-name">이름</label><input id="st-name" name="name" required maxlength="20">
+      <label for="st-email">이메일 (로그인 아이디)</label><input id="st-email" name="email" type="email" required>
+      <label for="st-pw">초기 비밀번호</label><input id="st-pw" name="password" required minlength="8" placeholder="영문+숫자 8자 이상">
+      <button class="btn primary sm" type="submit">계정 만들기</button>
+      <p class="muted small">첫 로그인 후 내 프로필에서 비밀번호를 바꾸도록 안내하세요. 모든 생성·정지·초기화는 감사 기록에 남습니다.</p></form></section></div>`;
+}
+
+function integrations(state) {
+  const server = state.server ?? { mode: 'demo' };
+  const live = server.mode === 'server';
+  const status = (ok, on = '연동됨', off = '데모') => pill(ok ? on : off, ok ? 'complete' : 'pending');
+  const lastCall = id => (state.apiLogs ?? []).find(item => item.partner === id && item.source === 'partner-api');
+  const rows = [
+    ['server', '서비스 서버', live ? '서버 API · 파일 DB(data/db.json) · HttpOnly 세션 쿠키 · scrypt 비밀번호' : '브라우저 저장소로 동작 중 (GitHub Pages 등 정적 호스팅)', status(live, '서버 연결', '브라우저 데모')],
+    ['users', '카카오 로그인', '.env의 KAKAO_CLIENT_ID / KAKAO_CLIENT_SECRET · Redirect URI: /auth/kakao/callback', status(server.oauth?.kakao)],
+    ['users', '네이버 로그인', '.env의 NAVER_CLIENT_ID / NAVER_CLIENT_SECRET · Redirect URI: /auth/naver/callback', status(server.oauth?.naver)],
+    ['users', 'Google 로그인', '.env의 GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET · Redirect URI: /auth/google/callback', status(server.oauth?.google)],
+    ['users', 'Apple 로그인', 'Apple Developer 서비스 ID와 키(.p8)로 client_secret(JWT) 생성 필요', status(false, '', '준비 중')],
+    ['send', '웹하드 웹훅 발송', live ? (server.webhooks ? 'HMAC 서명 · 실패 시 최대 3회 재시도' : 'WEBHOOK_DELIVERY=off 로 꺼져 있음') : '서버 실행 시 동작', status(live && server.webhooks, '동작 중', '대기')],
+    ['gift', '모바일 쿠폰 공급사', '기프티쇼 비즈 등 계약 후 상품 조회·발행·취소 API 연결 (현재 자체 발급 코드)', status(false, '', '계약 전')],
+    ['bank', '계좌 지급(펌뱅킹)', '현재 관리자가 출금 심사에서 지급 완료 처리 · 은행/PG 지급대행 API 계약 후 자동 이체', status(false, '', '수동 지급')],
+    ['shield', '본인 확인', '휴대폰 본인인증(PASS 등)으로 실명·명의 확인 후 계좌 등록', status(false, '', '계약 전')],
+  ];
+  return `<section class="panel"><h2>외부 연동 상태</h2><ul class="integration-list">${rows.map(([glyph, name, copy, badge]) => `<li><span class="feature-icon tone-1">${icon(glyph, 20)}</span><div><strong>${name}</strong><small>${copy}</small></div>${badge}</li>`).join('')}</ul></section>
+    ${panel('제휴사 API 상태', `<div class="table-scroll"><table><thead><tr><th>제휴사</th><th>상태</th><th>API 키</th><th>웹훅</th><th>최근 API 호출</th></tr></thead><tbody>${state.partners.map(p => { const last = lastCall(p.id); return `<tr><td><strong>${p.name}</strong></td><td>${pill(p.active ? '운영' : '중지', p.active ? 'complete' : 'canceled')}</td><td><code>${escape((p.apiKey ?? '').slice(0, 12))}…</code></td><td>${p.webhook ? `<code>${escape(p.webhook.replace(/^https:\/\//, '').slice(0, 34))}</code>` : '—'}</td><td>${last ? showTime(last.date) + ' · ' + last.status : '—'}</td></tr>`; }).join('')}</tbody></table></div>`)}
+    <section class="panel"><h2>서버 실행 방법</h2><pre class="code-sample">npm run dev            # http://localhost:3070
+cp .env.example .env   # 소셜 로그인 키, 운영 옵션 설정
+DEMO_MODE=off          # 운영 시 테스트 계정 로그인·데모 초기화 차단</pre></section>`;
+}
+
 export function adminPage(state, me, page, ui, { profilePage, supportPage }) {
   const rows = state.transactions;
   switch (page) {
     case 'overview': return overview(state, me);
     case 'members': return members(state, me, ui);
     case 'partners': return partners(state);
+    case 'staff': return staff(state, me);
+    case 'integrations': return integrations(state);
     case 'requests': {
       const ex = rows.filter(r => r.type === 'exchange');
       return `<div class="tabs">${[['', '전체'], ...state.partners.map(p => [p.id, p.name])].map(([v, l]) => `<button type="button" class="tab ${(ui.partner ?? '') === v ? 'active' : ''}" data-action="ui" data-key="partner" data-value="${v}">${l} <b>${ex.filter(r => r.status === 'pending' && (!v || r.partner === v)).length}</b></button>`).join('')}</div>

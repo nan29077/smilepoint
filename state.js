@@ -16,7 +16,15 @@ export const hashPassword = text => {
   for (const char of 'smilepoint:' + text) { h ^= char.codePointAt(0); h = Math.imul(h, 16777619) >>> 0; }
   return 'fnv1a:' + h.toString(16);
 };
-const fail = message => { throw new Error(message); };
+// 서버에서는 scrypt 기반 해시로 교체한다 (server.mjs 참고).
+export const security = {
+  hash: text => hashPassword(text),
+  verify: (text, stored) => !!stored && stored === hashPassword(text),
+};
+export class AppError extends Error {
+  constructor(message, status = 400) { super(message); this.status = status; }
+}
+const fail = (message, status) => { throw new AppError(message, status); };
 const int = value => Number.isSafeInteger(value) ? value : NaN;
 function seeded(seed) {
   let s = seed;
@@ -37,7 +45,7 @@ export function freshState(now = new Date()) {
     date.setUTCHours(hour - 9, Math.floor(random() * 60), 0, 0);
     return date.toISOString();
   };
-  const pw = hashPassword(testPassword);
+  const pw = security.hash(testPassword);
   const people = [
     ['u2', '김하늘', 'haneul@example.com', 'kakao'], ['u3', '이도윤', 'doyun@example.com', 'naver'],
     ['u4', '박서연', 'seoyeon@example.com', 'email'], ['u5', '최민준', 'minjun@example.com', 'kakao'],
@@ -67,7 +75,7 @@ export function freshState(now = new Date()) {
         notify: { email: true, sms: false, marketing: i % 2 === 0 },
       })),
     ],
-    transactions: [], tickets: [], notifications: [], audit: [], attendance: {},
+    transactions: [], tickets: [], notifications: [], audit: [], attendance: {}, apiLogs: [], webhooks: [],
   };
   for (const account of state.accounts) {
     account.password = pw;
@@ -128,6 +136,9 @@ export function freshState(now = new Date()) {
   notify(state, 'admin', '새 1:1 문의가 등록되었습니다.', 'app/admin/support', at(0, 9));
   notify(state, 'admin', '출금 심사 대기 건을 확인해 주세요.', 'app/admin/payouts', at(0, 14));
   for (const item of state.notifications) if (item.date < at(1)) item.read = true;
+  for (const row of state.transactions.filter(r => r.type === 'exchange').slice(0, 40)) {
+    state.apiLogs.push({ id: 'A-' + row.id, partner: row.partner, method: 'POST', path: '/api/v1/exchanges/' + row.id + (row.status === 'complete' ? '/approve' : row.status === 'rejected' ? '/reject' : ''), status: 200, ms: 80 + Math.floor(random() * 140), date: row.updated ?? row.date, source: row.status === 'pending' ? 'webhook' : 'partner-api' });
+  }
   log(state, 'a1', '설정 변경', '운영 설정', '출금 수수료 500 P, 최소 출금 5,000 P', at(30));
   log(state, 'a1', '공지 등록', 'n3', '디스크온 제휴 오픈 기념 교환 이벤트', at(0, 8));
   return state;
@@ -157,7 +168,7 @@ function startSession(state, target, method) {
 
 export function login(state, email, password) {
   const target = byEmail(state, email);
-  if (!target || target.password !== hashPassword(password)) fail('이메일 또는 비밀번호가 일치하지 않습니다.');
+  if (!target || !security.verify(String(password ?? ''), target.password)) fail('이메일 또는 비밀번호가 일치하지 않습니다.', 401);
   return startSession(state, target, 'email');
 }
 export function loginAs(state, id) {
@@ -183,7 +194,7 @@ export function signup(state, input, now = new Date()) {
   const created = {
     id: 'u' + (state.accounts.length + 1) + '-' + now.getTime().toString(36), role: 'user', name, email, phone: String(input.phone ?? '').trim(),
     provider: input.provider || 'email', status: 'active', createdAt: now.toISOString(), referral: 'SP' + now.getTime().toString(36).slice(-6).toUpperCase(),
-    password: input.provider && input.provider !== 'email' ? '' : hashPassword(input.password), avatar: Math.floor(Math.random() * animals.length), photo: '',
+    password: input.provider && input.provider !== 'email' ? '' : security.hash(input.password), avatar: Math.floor(Math.random() * animals.length), photo: '',
     bank: null, links: {}, notify: { email: true, sms: false, marketing: !!input.marketing },
   };
   state.accounts.push(created);
@@ -199,12 +210,24 @@ export function signup(state, input, now = new Date()) {
   return created;
 }
 
-export function socialLogin(state, provider, now = new Date()) {
-  const existing = state.accounts.find(item => item.provider === provider && item.role === 'user' && item.social);
+// profile: 실제 OAuth 연동 시 { id, name, email } — 없으면 데모 회원으로 처리한다.
+export function socialLogin(state, provider, profile = null, now = new Date()) {
+  if (!['kakao', 'naver', 'google', 'apple'].includes(provider)) fail('지원하지 않는 로그인 방식입니다.');
+  const socialId = profile?.id ? String(profile.id) : 'demo';
+  const existing = state.accounts.find(item => item.role === 'user' && item.social?.[provider] === socialId);
   if (existing) return startSession(state, existing, provider);
+  const sameEmail = profile?.email ? byEmail(state, profile.email) : null;
+  if (sameEmail) {
+    if (sameEmail.role !== 'user') fail('관리자 계정은 소셜 로그인을 사용할 수 없습니다.', 403);
+    sameEmail.social = { ...(sameEmail.social ?? {}), [provider]: socialId };
+    return startSession(state, sameEmail, provider);
+  }
   const names = { kakao: '카카오 회원', naver: '네이버 회원', google: 'Google 회원', apple: 'Apple 회원' };
-  const created = signup(state, { provider, name: names[provider] ?? '소셜 회원', email: `${provider}.${now.getTime().toString(36)}@social.smilepoint.kr`, terms: true, privacy: true, age: true }, now);
-  created.social = true;
+  const created = signup(state, {
+    provider, name: String(profile?.name ?? names[provider]).slice(0, 20).padEnd(2, ' ').trim() || names[provider],
+    email: profile?.email ?? `${provider}.${now.getTime().toString(36)}@social.smilepoint.kr`, terms: true, privacy: true, age: true,
+  }, now);
+  created.social = { [provider]: socialId };
   return created;
 }
 
@@ -221,9 +244,10 @@ export function updateProfile(state, id, { name, phone, notify: prefs }) {
 }
 export function changePassword(state, id, before, after) {
   const target = account(state, id);
-  if (target.password && target.password !== hashPassword(before)) fail('현재 비밀번호가 일치하지 않습니다.');
+  after = String(after ?? '');
+  if (target.password && !security.verify(String(before ?? ''), target.password)) fail('현재 비밀번호가 일치하지 않습니다.');
   if (after.length < 8 || !/[a-z]/i.test(after) || !/\d/.test(after)) fail('새 비밀번호는 영문과 숫자를 포함해 8자 이상이어야 합니다.');
-  target.password = hashPassword(after);
+  target.password = security.hash(after);
 }
 
 // ───────── 잔액·등급 ─────────
@@ -312,6 +336,7 @@ export function exchange(state, userId, partnerId, amount) {
   if (!(amount >= partner.min) || amount > partnerAvailable(state, userId, partnerId) || amount % partner.divisor) fail('교환 가능 잔액, 최소 금액과 교환 단위를 확인해 주세요.');
   const row = record(state, { userId, type: 'exchange', partner: partnerId, source: amount, points: amount / partner.divisor, rate: partner.divisor, status: 'pending' });
   notify(state, 'partner:' + partnerId, `새 교환 신청이 접수되었습니다. (${amount.toLocaleString('ko-KR')} P)`, 'app/partner/requests');
+  queueWebhook(state, partnerId, 'exchange.requested', { exchangeId: row.id, member: account(state, userId).links[partnerId].loginId, amount, points: row.points, rate: row.rate });
   return row;
 }
 
@@ -425,6 +450,7 @@ export function update(state, actorId, id, status, reason = '') {
   if (reason) row.reason = String(reason).trim().slice(0, 100);
   const owner = account(state, row.userId);
   const amount = row.points.toLocaleString('ko-KR');
+  if (status === 'canceled' && row.type === 'exchange') queueWebhook(state, row.partner, 'exchange.canceled', { exchangeId: row.id });
   if (status !== 'canceled') {
     const label = row.type === 'exchange' ? `${partnerOf(state, row.partner)?.name} 교환 ${amount} P` : `출금 ${amount} P`;
     notify(state, row.userId, status === 'complete' ? `${label}${row.type === 'exchange' ? '가 적립되었습니다.' : '가 지급되었습니다.'}` : `${label} 신청이 반려되었습니다. 사유: ${row.reason}`, 'app/user/activity');
@@ -555,4 +581,133 @@ export function series(rows, days, pick, now = new Date()) {
     if (key in sums) sums[key] += pick(row);
   }
   return keys.map(key => ({ key, label: key.slice(5).replace('-', '.'), value: sums[key] }));
+}
+
+// ───────── 프로필 이미지 ─────────
+export function setAvatar(state, id, index) {
+  const target = account(state, id);
+  if (!target || !Number.isInteger(index) || !animals[index]) fail('캐릭터를 찾을 수 없습니다.');
+  target.avatar = index;
+  return target;
+}
+export function setPhoto(state, id, photo) {
+  const target = account(state, id);
+  photo = String(photo ?? '');
+  if (photo && (!/^data:image\/(?:jpeg|png|webp);base64,[a-z0-9+/=]+$/i.test(photo) || photo.length > 400000)) fail('사진 형식 또는 크기를 확인해 주세요.');
+  target.photo = photo;
+  return target;
+}
+
+// ───────── 관리자: 운영진·제휴사·상품 생성 ─────────
+export function createStaff(state, adminId, { role, partnerId, name, email, password }) {
+  admin(state, adminId);
+  if (!['partner', 'admin'].includes(role)) fail('역할을 선택해 주세요.');
+  if (role === 'partner' && !partnerOf(state, partnerId)) fail('담당 제휴사를 선택해 주세요.');
+  name = String(name ?? '').trim(); email = String(email ?? '').trim();
+  if (name.length < 2 || name.length > 20) fail('이름은 2~20자로 입력해 주세요.');
+  if (!emailPattern.test(email)) fail('올바른 이메일 주소를 입력해 주세요.');
+  if (byEmail(state, email)) fail('이미 사용 중인 이메일입니다.');
+  const pw = String(password ?? '');
+  if (pw.length < 8 || !/[a-z]/i.test(pw) || !/\d/.test(pw)) fail('초기 비밀번호는 영문과 숫자를 포함해 8자 이상이어야 합니다.');
+  const created = { id: (role === 'admin' ? 'a' : 'p') + Date.now().toString(36), role, ...(role === 'partner' ? { partnerId } : {}), name, email, phone: '', provider: 'email', status: 'active', createdAt: new Date().toISOString(), password: security.hash(pw), avatar: Math.floor(Math.random() * animals.length), photo: '' };
+  state.accounts.push(created);
+  log(state, adminId, '운영진 계정 생성', email, `${role === 'admin' ? '최고 관리자' : partnerOf(state, partnerId).name + ' 담당자'} · ${name}`);
+  return created;
+}
+export function setStaffStatus(state, adminId, id, status) {
+  admin(state, adminId);
+  const target = account(state, id);
+  if (!target || target.role === 'user' || !['active', 'suspended'].includes(status)) fail('운영진 계정을 찾을 수 없습니다.');
+  if (target.id === adminId) fail('본인 계정은 정지할 수 없습니다.');
+  if (status === 'suspended' && target.role === 'admin' && state.accounts.filter(a => a.role === 'admin' && a.status === 'active').length < 2) fail('활성 최고 관리자가 최소 1명 필요합니다.');
+  target.status = status;
+  log(state, adminId, status === 'active' ? '운영진 활성화' : '운영진 정지', target.email, target.name);
+}
+export function resetPassword(state, adminId, id) {
+  admin(state, adminId);
+  const target = account(state, id) ?? fail('계정을 찾을 수 없습니다.');
+  if (!target.password) fail('소셜 로그인 계정은 비밀번호가 없습니다.');
+  const temp = 'Sp' + Math.random().toString(36).slice(2, 8) + Math.floor(Math.random() * 90 + 10);
+  target.password = security.hash(temp);
+  log(state, adminId, '비밀번호 초기화', target.email, target.name);
+  notify(state, target.id, '관리자가 비밀번호를 초기화했습니다. 로그인 후 비밀번호를 변경해 주세요.', `app/${target.role}/profile`);
+  return temp;
+}
+export function createPartner(state, adminId, { name, type, divisor, min, approval }) {
+  admin(state, adminId);
+  name = String(name ?? '').trim();
+  divisor = int(Number(divisor)); min = int(Number(min));
+  if (name.length < 2 || name.length > 20) fail('제휴사 이름은 2~20자로 입력해 주세요.');
+  if (state.partners.some(p => p.name === name)) fail('이미 등록된 제휴사입니다.');
+  if (!(divisor >= 1 && divisor <= 20) || !(min >= divisor) || min % divisor) fail('교환 비율과 최소 금액(비율의 배수)을 확인해 주세요.');
+  const colors = ['green', 'blue', 'peach', 'violet'];
+  const id = 'w' + Date.now().toString(36);
+  const partner = { id, name, initials: name[0], color: colors[state.partners.length % colors.length], type: String(type || '판매 적립').slice(0, 20), divisor, min, approval: String(approval || '평균 1일').slice(0, 20), active: false,
+    apiKey: 'sp_live_' + Array.from({ length: 24 }, () => Math.floor(Math.random() * 16).toString(16)).join(''), webhook: '', ip: '' };
+  state.partners.push(partner);
+  log(state, adminId, '제휴사 등록', name, `${divisor}:1 · 최소 ${min} · 등록 직후 일시 중지 상태`);
+  return partner;
+}
+export function createProduct(state, adminId, { name, brand, category, cost, stock }) {
+  admin(state, adminId);
+  name = String(name ?? '').trim(); brand = String(brand ?? '').trim();
+  cost = int(Number(cost)); stock = int(Number(stock));
+  if (!name || name.length > 40 || !brand || brand.length > 20) fail('상품명(40자)과 브랜드(20자)를 입력해 주세요.');
+  if (!['카페', '외식', '편의점', '디저트', '문화', '상품권'].includes(category)) fail('분류를 선택해 주세요.');
+  if (!(cost >= 100) || !(stock >= 0)) fail('판매 포인트와 재고를 확인해 주세요.');
+  const product = { id: 'g' + Date.now().toString(36), name, brand, category, cost, stock, active: true };
+  state.products.push(product);
+  log(state, adminId, '상품 등록', name, `${cost.toLocaleString('ko-KR')} P · 재고 ${stock}`);
+  return product;
+}
+
+// ───────── 연동 기록 ─────────
+export function apiLog(state, entry) {
+  state.apiLogs ??= [];
+  state.apiLogs.unshift({ id: 'A-' + Date.now().toString(36) + Math.random().toString(36).slice(2, 5), date: new Date().toISOString(), ...entry });
+  state.apiLogs.length = Math.min(state.apiLogs.length, 500);
+}
+
+// ───────── 공개 통계 · 역할별 스냅샷 ─────────
+export function publicStats(state) {
+  return {
+    exchanged: state.transactions.filter(row => row.type === 'exchange' && row.status === 'complete').reduce((sum, row) => sum + row.points, 0),
+    members: state.accounts.filter(item => item.role === 'user').length,
+  };
+}
+const publicPartner = ({ apiKey, webhook, ip, ...rest }) => rest;
+const brief = a => ({ id: a.id, role: a.role, name: a.name, avatar: a.avatar, photo: a.photo, provider: a.provider, status: a.status, createdAt: a.createdAt });
+const privateAccount = ({ password, ...rest }) => ({ ...rest, password: password ? 'set' : '' });
+
+// 서버가 브라우저로 보내는 데이터. 역할에 따라 볼 수 있는 범위만 담는다.
+export function snapshot(state, viewer) {
+  const base = {
+    version: 2, seq: state.seq, settings: state.settings, products: state.products,
+    announcements: state.announcements.filter(item => viewer?.role === 'admin' || item.visible),
+    stats: publicStats(state), session: viewer ? { accountId: viewer.id } : null,
+    partners: state.partners.map(publicPartner), accounts: [], transactions: [], tickets: [], notifications: [], audit: [], attendance: {}, apiLogs: [], webhooks: [],
+  };
+  if (!viewer) return base;
+  const mine = notificationsFor(state, viewer);
+  if (viewer.role === 'admin') {
+    return { ...base, ...state, partners: state.partners, accounts: state.accounts.map(privateAccount), notifications: mine, session: base.session, stats: base.stats };
+  }
+  if (viewer.role === 'partner') {
+    const rows = state.transactions.filter(row => row.type === 'exchange' && row.partner === viewer.partnerId);
+    const ids = new Set(rows.map(row => row.userId));
+    return { ...base, partners: state.partners.map(p => p.id === viewer.partnerId ? p : publicPartner(p)),
+      accounts: [privateAccount(viewer), ...state.accounts.filter(a => ids.has(a.id)).map(brief)], transactions: rows, notifications: mine,
+      apiLogs: (state.apiLogs ?? []).filter(item => item.partner === viewer.partnerId).slice(0, 100), webhooks: (state.webhooks ?? []).filter(item => item.partner === viewer.partnerId).slice(0, 50) };
+  }
+  const rows = state.transactions.filter(row => row.userId === viewer.id);
+  const others = new Set(rows.map(row => row.counterpart).filter(Boolean));
+  return { ...base, accounts: [privateAccount(viewer), ...state.accounts.filter(a => others.has(a.id)).map(brief)], transactions: rows,
+    tickets: state.tickets.filter(item => item.userId === viewer.id), notifications: mine, attendance: { [viewer.id]: state.attendance[viewer.id] ?? [] } };
+}
+
+// 웹훅은 대기열에 쌓고, 실서버(server.mjs)가 비동기로 전송해 결과를 기록한다.
+export function queueWebhook(state, partnerId, event, data) {
+  state.webhooks ??= [];
+  state.webhooks.unshift({ id: 'W-' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6), partner: partnerId, event, data, status: 'queued', attempts: 0, date: new Date().toISOString() });
+  state.webhooks.length = Math.min(state.webhooks.length, 300);
 }

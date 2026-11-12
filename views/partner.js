@@ -80,28 +80,32 @@ export function settlementTable(state, rows, partners, days) {
 }
 
 function integration(state, me, partner, ui) {
-  const rows = visibleTransactions(state, me).slice(0, 12);
   const key = ui.reveal ? partner.apiKey : partner.apiKey.slice(0, 12) + '•'.repeat(16) + partner.apiKey.slice(-4);
-  const logs = rows.flatMap(row => [
-    { at: row.date, method: 'POST', path: '/v1/exchanges', code: 201, ms: 140 + (row.source % 90), id: row.id },
-    ...(row.updated ? [{ at: row.updated, method: 'POST', path: `/v1/exchanges/${row.id}/${row.status === 'complete' ? 'approve' : 'reject'}`, code: 200, ms: 90 + (row.points % 70), id: row.id }] : []),
-  ]).sort((a, b) => b.at.localeCompare(a.at)).slice(0, 12);
-  return `<div class="dash-grid two-one">
+  const logs = (state.apiLogs ?? []).filter(item => item.partner === partner.id).slice(0, 15);
+  const hooks = (state.webhooks ?? []).filter(item => item.partner === partner.id).slice(0, 8);
+  const live = state.server?.mode === 'server';
+  const base = live ? location.origin : 'https://api.smilepoint.kr';
+  const hookPill = h => pill({ delivered: '전송 완료', failed: '전송 실패', retry: '재시도 대기', queued: live ? '전송 대기' : '데모: 전송 안 함', skipped: '주소 없음' }[h.status] ?? h.status, { delivered: 'complete', failed: 'rejected', retry: 'pending', queued: 'pending' }[h.status] ?? 'canceled');
+  return `<div class="notice-bar ${live ? 'ok' : ''}">${icon(live ? 'check' : 'alert', 18)}<span>${live ? `<b>서버 연결됨</b> 아래 API는 지금 이 서버(${escape(location.host)})에서 실제로 호출할 수 있습니다.` : '<b>데모 모드</b> 브라우저 저장소로 동작 중입니다. <code>npm run dev</code>로 서버를 실행하면 실제 API와 웹훅이 동작합니다.'}</span></div>
+    <div class="dash-grid two-one">
     <section class="panel"><div class="panel-head"><h2>API 키</h2>${pill('운영 키', 'complete')}</div>
       <div class="code-box wide"><code>${key}</code>${action(ui.reveal ? '숨기기' : '보기', 'ui', `data-key="reveal" data-value="${ui.reveal ? '' : '1'}"`, 'btn outline sm', 'eye')}${action('복사', 'copy', `data-value="${partner.apiKey}"`, 'btn outline sm', 'copy')}</div>
       <p class="muted small">키는 서버 간 통신에만 사용하고 외부에 노출하지 마세요. 재발급하면 이전 키는 즉시 폐기됩니다.</p>
       ${action('키 재발급', 'regen-key', '', 'btn outline sm', 'refresh')}
-      <hr><form class="stack" data-form="webhook"><label for="webhook">웹훅 수신 URL</label><div class="inline-field"><input id="webhook" name="url" value="${escape(partner.webhook)}" required><button class="btn primary sm" type="submit">저장</button></div></form>
-      <p class="muted small">허용 IP <code>${partner.ip}</code> · 이벤트 <code>exchange.requested</code> <code>exchange.canceled</code></p></section>
-    <section class="panel"><h2>API 명세 요약</h2><ul class="endpoint-list">
-      <li><b class="get">GET</b><code>/v1/members/{id}/balance</code><small>회원 교환 가능 잔액 조회</small></li>
-      <li><b class="post">POST</b><code>/v1/exchanges</code><small>교환 신청 수신 · 포인트 홀드</small></li>
-      <li><b class="post">POST</b><code>/v1/exchanges/{id}/approve</code><small>승인 · 포인트 차감 확정</small></li>
-      <li><b class="post">POST</b><code>/v1/exchanges/{id}/reject</code><small>반려 · 홀드 해제</small></li>
-      <li><b class="get">GET</b><code>/v1/settlements?date=</code><small>일자별 대사 자료</small></li></ul>
-      <p class="muted small">모든 요청은 <code>X-Api-Key</code>와 HMAC 서명 헤더로 인증합니다.</p></section></div>
-    <section class="panel"><div class="panel-head"><h2>최근 API 호출</h2>${pill('모의 로그', 'pending')}</div>
-      ${logs.length ? `<div class="table-scroll"><table><thead><tr><th>시각</th><th>요청</th><th>거래</th><th>응답</th><th class="numeric">지연</th></tr></thead><tbody>${logs.map(log => `<tr><td>${showTime(log.at)}</td><td><code>${log.method} ${log.path}</code></td><td>${log.id}</td><td>${pill(log.code + ' OK', 'complete')}</td><td class="numeric">${log.ms}ms</td></tr>`).join('')}</tbody></table></div>` : blank('호출 기록이 없습니다.')}</section>`;
+      <hr><form class="stack" data-form="webhook"><label for="webhook">웹훅 수신 URL</label><div class="inline-field"><input id="webhook" name="url" value="${escape(partner.webhook)}" required placeholder="https://"><button class="btn primary sm" type="submit">저장</button></div></form>
+      <div class="hook-actions">${action('웹훅 테스트 전송', 'test-webhook', '', 'btn outline sm', 'send')}<span class="muted small">서명 헤더 <code>X-SmilePoint-Signature: sha256=HMAC(API 키, 본문)</code></span></div></section>
+    <section class="panel"><h2>API 명세</h2><ul class="endpoint-list">
+      <li><b class="get">GET</b><code>/api/v1/exchanges?status=pending</code><small>자사 교환 신청 목록</small></li>
+      <li><b class="post">POST</b><code>/api/v1/exchanges/{id}/approve</code><small>승인 · 회원 포인트 적립</small></li>
+      <li><b class="post">POST</b><code>/api/v1/exchanges/{id}/reject</code><small>반려 · 본문 <code>{"reason":"사유"}</code></small></li>
+      <li><b class="get">GET</b><code>/api/v1/settlements?date=YYYY-MM-DD</code><small>일자별 대사 자료</small></li></ul>
+      <p class="muted small">웹훅 이벤트: <code>exchange.requested</code> <code>exchange.canceled</code> <code>ping</code> · 실패 시 30초 간격 최대 3회 재시도</p>
+      <pre class="code-sample">curl -H "X-Api-Key: ${ui.reveal ? partner.apiKey : 'sp_live_…'}" \\
+  "${base}/api/v1/exchanges?status=pending"</pre></section></div>
+    <div class="dash-grid two-one">
+    <section class="panel"><div class="panel-head"><h2>최근 API 호출</h2>${pill(live ? '실시간 기록' : '샘플 기록', live ? 'complete' : 'pending')}</div>
+      ${logs.length ? `<div class="table-scroll"><table><thead><tr><th>시각</th><th>구분</th><th>요청</th><th>응답</th><th class="numeric">지연</th></tr></thead><tbody>${logs.map(log => `<tr><td>${showTime(log.date)}</td><td>${pill(log.source === 'webhook' ? '웹훅' : 'API', log.source === 'webhook' ? 'pending' : 'plain')}</td><td><code>${escape(log.method)} ${escape(log.path)}</code></td><td>${pill(log.status ? String(log.status) : '연결 실패', log.status >= 200 && log.status < 300 ? 'complete' : 'rejected')}</td><td class="numeric">${log.ms ?? '—'}ms</td></tr>`).join('')}</tbody></table></div>` : blank('호출 기록이 없습니다.')}</section>
+    <section class="panel"><h2>웹훅 전송</h2>${hooks.length ? `<ul class="hook-list">${hooks.map(h => `<li><div><code>${escape(h.event)}</code><small>${showTime(h.date)} · ${h.attempts ?? 0}회 시도${h.error ? ' · ' + escape(h.error) : ''}</small></div>${hookPill(h)}</li>`).join('')}</ul>` : blank('전송 기록이 없습니다.', 'send')}</section></div>`;
 }
 
 function policy(state, partner) {

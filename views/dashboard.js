@@ -34,6 +34,7 @@ export function dashboard(state, me, page, ui) {
     </aside>
     <div class="dash-main"><header class="dash-header">
       <div><button type="button" class="icon-btn dash-toggle" data-action="dash-menu" aria-label="대시보드 메뉴" aria-controls="dash-menu" aria-expanded="false">${icon('menu')}</button>
+      <span class="mode-badge ${state.server?.mode === 'server' ? 'live' : ''}" title="${state.server?.mode === 'server' ? '서버에 저장됩니다' : '이 브라우저에만 저장됩니다'}"><i></i>${state.server?.mode === 'server' ? '서버 연결' : '데모 모드'}</span>
       <nav class="crumbs" aria-label="현재 위치"><span>${roles[role].name}</span>${icon('chevron', 14)}<strong>${pageTitle(role, page)}</strong></nav></div>
       <div class="dash-tools">
         <button type="button" class="icon-btn bell" data-action="notifications" aria-label="알림 ${unread}건">${icon('bell', 21)}${unread ? `<b>${unread > 9 ? '9+' : unread}</b>` : ''}</button>

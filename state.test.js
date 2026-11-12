@@ -78,3 +78,22 @@ test('쿠폰 구매·출석·선물·관리자 조정', () => {
   S.adjust(state, 'a1', 'u2', -500, '오류 정정');
   assert.equal(state.audit[0].action, '포인트 조정');
 });
+
+test('관리자: 운영진·제휴사·상품 생성과 역할별 스냅샷', () => {
+  const state = fresh();
+  const staff = S.createStaff(state, 'a1', { role: 'partner', partnerId: 'file', name: '담당자', email: 'f@test.com', password: 'abcd1234' });
+  assert.equal(S.login(state, 'f@test.com', 'abcd1234').id, staff.id);
+  assert.throws(() => S.createStaff(state, 'u1', { role: 'admin', name: '해커', email: 'h@test.com', password: 'abcd1234' }));
+  assert.throws(() => S.setStaffStatus(state, 'a1', 'a1', 'suspended'));
+  const temp = S.resetPassword(state, 'a1', 'p1');
+  assert.equal(S.login(state, 'partner@smilepoint.kr', temp).id, 'p1');
+  const partner = S.createPartner(state, 'a1', { name: '스카이파일', divisor: 3, min: 3000 });
+  assert.equal(partner.active, false);
+  S.createProduct(state, 'a1', { name: '버블티', brand: '티하우스', category: '카페', cost: 5500, stock: 10 });
+  const userView = S.snapshot(state, S.account(state, 'u1'));
+  assert.ok(userView.transactions.every(row => row.userId === 'u1'));
+  assert.ok(userView.partners.every(p => !p.apiKey));
+  assert.equal(userView.accounts[0].password, 'set');
+  const anon = S.snapshot(state, null);
+  assert.equal(anon.accounts.length, 0);
+});

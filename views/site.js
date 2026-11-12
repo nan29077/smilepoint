@@ -1,5 +1,5 @@
 import { config, escape, faq, format, icon, socialMark, testAccounts, testPassword } from '../catalog.js';
-import { current } from '../state.js';
+import { current, publicStats } from '../state.js';
 import { announcementList, avatar, brand, button, faqList, heading, productCards } from './ui.js';
 
 export const slides = [
@@ -92,9 +92,9 @@ function webhardCards() {
 }
 
 function stats(state) {
-  const done = state.transactions.filter(row => row.status === 'complete');
-  const exchanged = done.filter(row => row.type === 'exchange').reduce((sum, row) => sum + row.points, 0);
-  const members = state.accounts.filter(item => item.role === 'user').length;
+  const summary = state.stats ?? publicStats(state);
+  const exchanged = summary.exchanged;
+  const members = summary.members;
   const items = [
     ['exchange', format(exchanged) + ' P', '누적 교환 포인트'],
     ['users', format(members) + '명', '함께하는 회원'],
@@ -181,10 +181,10 @@ export function login(state) {
         <button class="btn primary block" type="submit">로그인 ${icon('login', 17)}</button>
       </form>
       <p class="auth-switch">아직 회원이 아니신가요? <a href="#signup">회원가입</a></p>
-      <div class="test-accounts"><div class="test-head"><strong>${icon('key', 17)} 테스트 계정으로 로그인</strong><small>비밀번호 ${testPassword}</small></div>
+      ${state.server?.demo === false ? '' : `<div class="test-accounts"><div class="test-head"><strong>${icon('key', 17)} 테스트 계정으로 로그인</strong><small>비밀번호 ${testPassword}</small></div>
         ${testAccounts.map((item, i) => `<button type="button" class="test-login" data-action="test-login" data-id="${item.id}">
           <span class="feature-icon tone-${i}">${icon(['user', 'layers', 'shield'][i], 21)}</span><span><strong>${item.label} 테스트 계정 로그인</strong><small>${item.email} · ${item.copy}</small></span>${icon('chevron', 18)}</button>`).join('')}
-      </div>
+      </div>`}
     </div>
   </div></main>`;
 }
