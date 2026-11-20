@@ -976,3 +976,33 @@ tr.row-on td { background: #f1f8ee; }
   .summary-strip .strip-action { justify-content: flex-start; }
   .notice-bar { flex-wrap: wrap; }
 }
+
+/* ───────── 정산서 · 자금 현황 · 회원 메모 ───────── */
+.finance-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+.finance-grid > div { padding: 14px 15px; border: 1px solid var(--line); border-radius: 14px; background: #fbfcfa; display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.finance-grid span { font-size: 12.5px; color: var(--muted); }
+.finance-grid strong { font-size: 19px; letter-spacing: -.01em; }
+.finance-grid small { font-size: 12px; color: var(--muted); line-height: 1.45; }
+.cell-note { display: block; margin-top: 3px; font-size: 11.5px; color: var(--muted); max-width: 260px; white-space: normal; }
+.warn-text { color: #b4561f !important; }
+.memo-list { list-style: none; margin: 0 0 10px; padding: 0; display: grid; gap: 8px; }
+.memo-list li { position: relative; padding: 10px 70px 10px 12px; border-radius: 12px; background: #fff8e8; border: 1px solid #f1e2bb; }
+.memo-list p { margin: 0 0 3px; font-size: 13.5px; line-height: 1.5; white-space: pre-wrap; word-break: break-word; }
+.memo-list small { color: var(--muted); font-size: 11.5px; }
+.memo-list .text-btn { position: absolute; right: 10px; top: 9px; font-size: 12px; }
+.memo-form { display: flex; gap: 8px; margin-bottom: 14px; }
+.memo-form input { flex: 1; min-width: 0; }
+.tabs .tab b { margin-left: 4px; font-weight: 800; }
+@media (max-width: 900px) { .finance-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 560px) { .finance-grid { grid-template-columns: 1fr; } .memo-form { flex-direction: column; } }
+
+/* 거래 확인증 인쇄: 열린 상세 창만 출력 */
+.print-only { display: none; }
+@media print {
+  body.printing-dialog > *:not(dialog) { display: none !important; }
+  body.printing-dialog dialog[open] { position: static; inset: auto; max-width: none; width: 100%; max-height: none; overflow: visible; box-shadow: none; border: 0; padding: 0; margin: 0; }
+  body.printing-dialog dialog::backdrop { display: none; }
+  body.printing-dialog .no-print, body.printing-dialog dialog .icon-btn, body.printing-dialog dialog details, body.printing-dialog dialog .dialog-actions { display: none !important; }
+  body.printing-dialog .print-only { display: block; margin-top: 18px; font-size: 12px; color: #333; }
+  body.printing-dialog #dialog-title::before { content: '스마일 포인트 '; }
+}

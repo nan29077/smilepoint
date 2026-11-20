@@ -88,6 +88,17 @@ export const ops = {
   cancelTransfer: reviewer((s, a, p) => S.cancelTransfer(s, a.id, p.transferId, p.reason)),
   // 포인트 확정 요청 승인·거절 (웹하드 관리자, 또는 웹하드 연동 장애 시 최고 관리자)
   approveConfirm: reviewer((s, a, p) => S.approveConfirm(s, a.id, p.id)),
+  approveConfirms: reviewer((s, a, p) => S.approveConfirms(s, a.id, p.ids)),
+  resendConfirm: reviewer((s, a, p) => S.resendConfirm(s, a.id, p.id)),
+  // 웹하드 정산서: 최고 관리자 발행·입금 확인·취소, 웹하드 관리자 확인·이의 제기
+  issueStatement: admin((s, a, p) => S.issueStatement(s, a.id, p.partnerId, p.from)),
+  markStatementPaid: admin((s, a, p) => S.markStatementPaid(s, a.id, p.id, { amount: p.amount, memo: p.memo })),
+  cancelStatement: admin((s, a, p) => S.cancelStatement(s, a.id, p.id, p.reason)),
+  ackStatement: partner((s, a, p) => S.ackStatement(s, a.id, p.id)),
+  disputeStatement: partner((s, a, p) => S.disputeStatement(s, a.id, p.id, p.message)),
+  // 회원 관리 메모
+  addMemo: admin((s, a, p) => S.addMemo(s, a.id, p.userId, p.text)),
+  deleteMemo: admin((s, a, p) => S.deleteMemo(s, a.id, p.id)),
   rejectConfirm: reviewer((s, a, p) => S.rejectConfirm(s, a.id, p.id, p.reason)),
 
   // 최고 관리자

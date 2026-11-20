@@ -199,7 +199,7 @@ function failed(key, windowMs = 10 * 60000) {
 setInterval(() => { const now = Date.now(); for (const [key, entry] of attempts) if (now - entry.first > 3600000) attempts.delete(key); }, 600000).unref();
 // 같은 요청이 연달아 들어오면(더블클릭·중복 제출) 한 번만 처리한다.
 const recent = new Map();
-const duplicateGuarded = new Set(['exchange', 'withdraw', 'order', 'gift', 'attend', 'setBank', 'linkPartner', 'openTicket', 'adjust', 'review', 'bulkReview', 'reverseExchange', 'createPartner', 'createProduct', 'createStaff', 'createEvent', 'addAnnouncement', 'replyTicket', 'regenerateKey', 'resetPassword', 'cancelCoupon', 'requestConfirm', 'requestConfirmAll', 'simulateTransfer', 'charge', 'partnerTransfer', 'cancelTransfer', 'approveConfirm', 'rejectConfirm', 'cancelCharge']);
+const duplicateGuarded = new Set(['exchange', 'withdraw', 'order', 'gift', 'attend', 'setBank', 'linkPartner', 'openTicket', 'adjust', 'review', 'bulkReview', 'reverseExchange', 'createPartner', 'createProduct', 'createStaff', 'createEvent', 'addAnnouncement', 'replyTicket', 'regenerateKey', 'resetPassword', 'cancelCoupon', 'requestConfirm', 'requestConfirmAll', 'simulateTransfer', 'charge', 'partnerTransfer', 'cancelTransfer', 'approveConfirm', 'rejectConfirm', 'cancelCharge', 'approveConfirms', 'resendConfirm', 'issueStatement', 'markStatementPaid', 'cancelStatement', 'ackStatement', 'disputeStatement', 'addMemo', 'deleteMemo']);
 setInterval(() => { const now = Date.now(); for (const [key, at] of recent) if (now - at > 10000) recent.delete(key); }, 30000).unref();
 
 // ───────── 응답 도우미 ─────────
@@ -362,6 +362,12 @@ async function handlePartnerApi(request, response, url) {
         const body = await readBody(request, 16 * 1024);
         return finish(200, { data: S.cancelTransfer(db, manager.id, decodeURIComponent(parts[3]), body.reason ?? '') });
       }
+    }
+    // ── 정산서: 발행된 정산서 목록 (웹훅 settlement.issued 로도 전달)
+    if (request.method === 'GET' && parts[2] === 'statements' && parts.length === 3) {
+      const list = (db.statements ?? []).filter(item => item.partner === partner.id && item.status !== 'canceled')
+        .map(item => ({ id: item.id, from: item.from, to: item.to, count: item.count, amount: item.points, source: item.source, status: item.status, due: item.due, issuedAt: item.issuedAt, paidAt: item.paidAt ?? null, paidAmount: item.paidAmount ?? null }));
+      return finish(200, { data: list });
     }
     // ── 포인트 확정 요청: 회원이 확정하면 웹훅 points.confirm_requested 로 알리고, 웹하드가 승인·거절 API를 호출한다
     if (parts[2] === 'confirmations') {

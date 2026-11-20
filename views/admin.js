@@ -1,18 +1,20 @@
 import { escape, format, grades, icon } from '../catalog.js';
-import { account, balances, direction, feePercent, grade, kstDay, monthly, series } from '../state.js';
+import { account, balances, direction, feePercent, grade, kstDay, monthly, receivables, series, settleCycles } from '../state.js';
+import { statementsPage } from './settle.js';
 import { pendingQueue, settlementTable } from './partner.js';
 import { slides } from './site.js';
 import { activityFilters, applyFilters, confirmationTable } from './user.js';
-import { action, announcementList, avatar, barChart, blank, button, donut, maskAccount, metric, money, moreButton, pageSize, panel, pill, productVisual, providerName, showDate, showTime, table, trend, transactionLabel } from './ui.js';
+import { action, announcementList, avatar, barChart, blank, button, donut, maskAccount, metric, money, moreButton, pageSize, panel, pill, productVisual, providerName, showDate, showTime, statusPill, table, trend, transactionLabel } from './ui.js';
 
 export const adminMenu = [
   ['대시보드', [['overview', 'home', '운영 개요'], ['report', 'activity', '통계 리포트']]],
   ['회원·제휴', [['members', 'users', '회원 관리'], ['partners', 'layers', '제휴사 관리'], ['staff', 'key', '운영진 계정']]],
   ['거래 심사', [['requests', 'exchange', '교환·확정 심사'], ['payouts', 'bank', '출금 심사·지급'], ['transactions', 'file', '전체 거래']]],
   ['쇼핑', [['products', 'gift', '쿠폰 상품'], ['orders', 'shop', '쿠폰 주문']]],
-  ['운영', [['settlement', 'chart', '정산 및 대사'], ['support', 'help', '고객센터'], ['content', 'megaphone', '배너·공지'], ['integrations', 'link', '연동 관리'], ['settings', 'settings', '운영 설정'], ['audit', 'shield', '감사 기록']]],
+  ['운영', [['statements', 'wallet', '웹하드 정산서'], ['settlement', 'chart', '정산 및 대사'], ['support', 'help', '고객센터'], ['content', 'megaphone', '배너·공지'], ['integrations', 'link', '연동 관리'], ['settings', 'settings', '운영 설정'], ['audit', 'shield', '감사 기록']]],
 ];
 export const adminDescriptions = {
+  statements: '웹하드별 정산 기간마다 정산서를 발행하고 입금을 확인하세요. 웹하드의 확인·이의 제기도 여기서 봅니다.',
   members: '회원을 검색하고 잔액, 연결 계정, 거래를 확인하세요. 포인트 조정과 이용 정지를 할 수 있습니다.',
   partners: '제휴 웹하드를 등록하고 교환 비율, 최소 금액과 운영 상태를 관리하세요.',
   staff: '웹하드 관리자·최고 관리자 계정을 만들고 정지하거나 비밀번호를 초기화하세요.',
@@ -31,6 +33,26 @@ export const adminDescriptions = {
   profile: '관리자 정보와 프로필 사진을 관리하세요.',
 };
 
+// 자금 현황: 회원에게 줄 포인트(부채)와 웹하드에서 받을 정산금, 이번 달 수익
+function financePanel(state, users, money$) {
+  const totals = { available: 0, withdrawable: 0, charged: 0, unconfirmed: 0, confirming: 0, reserved: 0 };
+  for (const u of users) if (u.status !== 'deleted') { const b = balances(state, u.id); for (const k of Object.keys(totals)) totals[k] += b[k]; }
+  const month = kstDay().slice(0, 7);
+  const thisMonth = row => row.status === 'complete' && kstDay(row.updated ?? row.date).slice(0, 7) === month;
+  const fee = state.transactions.filter(r => r.type === 'withdrawal' && thisMonth(r)).reduce((s, r) => s + (r.fee ?? 0), 0);
+  const margin = state.transactions.filter(r => r.type === 'coupon' && thisMonth(r)).reduce((s, r) => s + marginOf(state, r), 0);
+  const charged = state.transactions.filter(r => r.type === 'charge' && thisMonth(r)).reduce((s, r) => s + r.points, 0);
+  const cell = (label, value, hint, tone = '') => `<div><span>${label}</span><strong class="${tone}">${value}</strong>${hint ? `<small>${hint}</small>` : ''}</div>`;
+  return `<section class="panel"><div class="panel-head"><h2>자금 현황</h2>${button('정산서', '#app/admin/statements', 'text-btn', 'chevron')}</div>
+    <div class="finance-grid">
+      ${cell('회원 사용 가능 포인트', format(totals.available) + ' P', `출금 가능 ${format(totals.withdrawable)} · 충전 잔액 ${format(totals.charged)}`)}
+      ${cell('출금 처리 중', format(totals.reserved) + ' P', '심사 대기·이체 중')}
+      ${cell('미확정 · 승인 대기', `${format(totals.unconfirmed)} · ${format(totals.confirming)} P`, '확정·승인 전 (정산 대상 아님)')}
+      ${cell('웹하드 받을 정산금', format(money$.issued + money$.unissued) + '원', `발행 ${format(money$.issued)} · 발행 대기 ${format(money$.unissued)} · 진행 중 ${format(money$.current)}`, money$.issued + money$.unissued ? 'minus' : '')}
+      ${cell('이번 달 수익', format(fee + margin) + '원', `출금 수수료 ${format(fee)} · 쿠폰 마진 ${format(margin)}`)}
+      ${cell('이번 달 카드 충전', format(charged) + '원', `정산 입금 ${format(money$.paidThisMonth)}원`)}
+    </div></section>`;
+}
 function overview(state, me) {
   const rows = state.transactions;
   const users = state.accounts.filter(a => a.role === 'user');
@@ -53,7 +75,13 @@ function overview(state, me) {
   const bankWaiting = state.accounts.filter(a => a.bankRequest).length;
   const asks = (state.confirmations ?? []).filter(item => item.status === 'pending');
   const staleAsks = asks.filter(item => Date.now() - new Date(item.date) > 30 * 60000);
+  const money$ = receivables(state);
+  const overdue = (state.statements ?? []).filter(item => item.status === 'issued' && item.due < today);
+  const disputes = (state.statements ?? []).filter(item => item.status !== 'canceled' && item.dispute);
   const alerts = [
+    overdue.length && ['wallet', `입금 기한이 지난 정산서 ${overdue.length}건 · ${format(overdue.reduce((s, r) => s + r.points, 0))}원`, '#app/admin/statements', 'rejected'],
+    disputes.length && ['alert', `웹하드 정산 이의 제기 ${disputes.length}건`, '#app/admin/statements', 'rejected'],
+    money$.unissued && ['wallet', `기간이 끝나 발행할 정산 ${format(money$.unissued)}원`, '#app/admin/statements', 'pending'],
     staleAsks.length && ['clock', `30분 넘게 웹하드 승인을 기다리는 포인트 확정 ${staleAsks.length}건 · 웹하드 연동 확인 필요`, '#app/admin/requests', 'rejected'],
     state.server?.mode === 'server' && !me.totp && ['shield', '2단계 인증이 꺼져 있습니다. 내 프로필에서 켜 주세요.', '#app/admin/profile', 'rejected'],
     secondReview && ['exchange', `2차 승인 대기 교환 ${secondReview}건 (고액·한도 초과)`, '#app/admin/requests', 'rejected'],
@@ -68,7 +96,7 @@ function overview(state, me) {
   const recent = users.filter(u => u.status !== 'deleted').sort((a, b) => b.createdAt.localeCompare(a.createdAt)).slice(0, 5);
   return `<section class="dash-banner admin-banner"><div><span class="eyebrow">최고 관리자 · 운영 개요</span>
       <h1>${escape(me.name)}님, 오늘도 좋은 하루예요.</h1><p>처리할 일 ${alerts.length}가지 · 회원 보유 포인트 총 ${format(liability)} P</p>
-      <div class="banner-actions">${button('교환 심사', '#app/admin/requests', 'btn lime sm', 'exchange')}${button('출금 심사', '#app/admin/payouts', 'btn ghost sm', 'bank')}${button('회원 관리', '#app/admin/members', 'btn ghost sm', 'users')}</div></div>
+      <div class="banner-actions">${button('교환·확정 심사', '#app/admin/requests', 'btn lime sm', 'exchange')}${button('정산서', '#app/admin/statements', 'btn ghost sm', 'wallet')}${button('출금 심사', '#app/admin/payouts', 'btn ghost sm', 'bank')}${button('회원 관리', '#app/admin/members', 'btn ghost sm', 'users')}</div></div>
       ${avatar(me, 'banner-avatar')}</section>
     <div class="card-grid metrics four">
       ${metric('전체 회원', format(users.filter(u => u.status !== 'deleted').length) + '명', 'users', `오늘 가입 ${users.filter(u => kstDay(u.createdAt) === today).length}명 · 정지 ${users.filter(u => u.status === 'suspended').length}명`, 0)}
@@ -76,6 +104,7 @@ function overview(state, me) {
       ${metric('출금 심사 대기', pendingOut.length + '건', 'bank', `${format(pendingOut.reduce((s, r) => s + r.points, 0))} P · 이체 중 ${transferring.length}건`, 2)}
       ${metric('7일 교환 적립', format(weekNow) + ' P', 'activity', `오늘 쿠폰 ${couponToday.length}건 판매`, 3, trend(weekNow, weekBefore))}
     </div>
+    ${financePanel(state, users, money$)}
     <div class="dash-grid two-one">
       ${panel('최근 14일 거래 추이', barChart(chart, { stacked: true }) + '<div class="chart-legend"><span><i class="green"></i>교환 적립</span><span><i class="extra"></i>출금 신청</span></div>')}
       ${panel('제휴사별 교환 비중', donut(byPartner, `<strong>${state.partners.length}</strong><small>제휴사</small>`))}
@@ -114,13 +143,18 @@ export function memberDetail(state, me, id) {
   const b = balances(state, id);
   const g = grade(state, id);
   const rows = state.transactions.filter(r => r.userId === id);
+  const memos = (state.memos ?? []).filter(m => m.userId === id);
   if (!u) return blank('회원을 찾을 수 없습니다.');
   const deleted = u.status === 'deleted';
   return `<div class="member-head">${avatar(u, 'profile-avatar')}<div><h3>${escape(u.name)} ${memberStatus(u)}</h3><p class="muted small">${escape(u.email)} · ${escape(u.phone || '연락처 없음')} · ${providerName(u.provider)} 가입 · ${g.name}</p></div></div>
     <div class="summary-strip compact"><div><span>사용 가능</span><strong>${format(b.available)} P</strong></div><div><span>출금 가능</span><strong>${format(b.withdrawable)} P</strong></div><div><span>충전 잔액</span><strong>${format(b.charged)} P</strong></div><div><span>미확정 · 승인 대기</span><strong>${format(b.unconfirmed)} · ${format(b.confirming)} P</strong></div><div><span>적립 예정</span><strong>${format(b.pending)} P</strong></div><div><span>처리 중</span><strong>${format(b.reserved)} P</strong></div></div>
     <div class="form-summary"><div><span>출금 계좌</span><strong>${u.bank ? `${escape(u.bank.bank)} ${maskAccount(u.bank.number)}` : '미등록'}</strong></div><div><span>연결 웹하드</span><strong>${Object.entries(u.links ?? {}).map(([k, link]) => escape(state.partners.find(p => p.id === k)?.name ?? k) + (link.verified ? '' : ' (인증 대기)')).join(', ') || '없음'}</strong></div><div><span>추천 코드</span><strong>${escape(u.referral ?? '—')}</strong></div><div><span>가입일</span><strong>${showDate(u.createdAt)}</strong></div>${deleted ? `<div><span>탈퇴일</span><strong>${showDate(u.deletedAt)}</strong></div>` : ''}</div>
     ${u.bankRequest ? `<div class="notice-bar warn">${icon('bank', 18)}<span><b>계좌 인증 대기</b> ${escape(u.bankRequest.bank)} ${escape(u.bankRequest.masked ?? '••••' + String(u.bankRequest.number ?? '').slice(-4))} · ${showTime(u.bankRequest.requestedAt)} 요청 · 예금주 명의를 확인한 뒤 승인하세요.</span>${action('명의 확인 후 승인', 'bank-approve', `data-id="${u.id}"`, 'btn primary sm', 'check')}</div>` : ''}
-    <h4>최근 거래</h4>${rows.length ? `<ul class="mini-tx">${rows.slice(0, 6).map(r => `<li><span>${transactionLabel(state, r)}</span><small>${showDate(r.date)}</small><b>${format(Math.abs(r.points))} P</b></li>`).join('')}</ul>` : blank('거래가 없습니다.')}
+    <div class="panel-head"><h4>최근 거래</h4>${action('전체 거래 보기', 'member-tx', `data-id="${u.id}"`, 'text-btn', 'chevron')}</div>${rows.length ? `<ul class="mini-tx">${rows.slice(0, 6).map(r => `<li><span>${transactionLabel(state, r)} · ${statusPill(r)}</span><small>${showDate(r.date)}</small><b>${direction(r) === 'in' ? '+' : '−'}${format(Math.abs(r.points))} P</b></li>`).join('')}</ul>` : blank('거래가 없습니다.')}
+    ${(state.confirmations ?? []).some(c => c.userId === id) ? `<h4>포인트 확정 요청</h4>${confirmationTable(state, (state.confirmations ?? []).filter(c => c.userId === id).slice(0, 5), { actions: true, resend: true })}` : ''}
+    <h4>관리 메모 <small class="muted">(운영진만 볼 수 있어요)</small></h4>
+    ${memos.length ? `<ul class="memo-list">${memos.map(m => `<li><p>${escape(m.text)}</p><small>${escape(m.byName ?? '')} · ${showTime(m.at)}</small>${action('삭제', 'memo-delete', `data-id="${escape(m.id)}" data-key="${u.id}"`, 'text-btn')}</li>`).join('')}</ul>` : '<p class="muted small">메모가 없습니다.</p>'}
+    ${deleted ? '' : `<form class="memo-form" data-form="memo" data-id="${u.id}"><input name="text" required maxlength="300" placeholder="예: 3/12 출금 지연 문의 응대, 본인 확인 완료" aria-label="관리 메모"><button class="btn outline sm" type="submit">메모 추가</button></form>`}
     ${deleted ? '' : `<form class="stack adjust-form" data-form="adjust" data-id="${u.id}"><h4>포인트 조정</h4><div class="field-grid"><div><label for="adj-amount">조정 포인트 (차감은 −)</label><input id="adj-amount" name="amount" type="number" required placeholder="예: 1000 또는 -500"></div><div><label for="adj-reason">사유</label><input id="adj-reason" name="reason" required maxlength="60" placeholder="이벤트 지급, 오류 정정 등"></div></div><button class="btn primary sm" type="submit">조정 반영</button></form>
     <div class="dialog-actions">${action(u.status === 'active' ? '이용 정지' : '정지 해제', 'member-status', `data-id="${u.id}" data-value="${u.status === 'active' ? 'suspended' : 'active'}"`, u.status === 'active' ? 'btn danger sm' : 'btn outline sm', u.status === 'active' ? 'lock' : 'check')}</div>`}`;
 }
@@ -136,7 +170,7 @@ function partners(state) {
     const manager = state.accounts.find(a => a.role === 'partner' && a.partnerId === p.id);
     return `<article class="partner-card admin"><div class="partner-top"><span class="partner-logo ${p.color}">${p.initials}</span>${pill(p.active ? '운영 중' : '일시 중지', p.active ? 'complete' : 'rejected')}</div>
       <h3>${escape(p.name)}</h3><p class="muted small">${escape(p.type)} · 담당 ${manager ? escape(manager.name) : '미지정'}</p>
-      <dl class="mini-dl"><div><dt>연동 방식</dt><dd>${p.flow === 'pull' ? '교환 신청' : '웹하드 전환'}</dd></div><div><dt>전환 수수료</dt><dd>${feePercent(p)}%</dd></div><div><dt>확정 대기</dt><dd>${(state.confirmations ?? []).filter(c => c.partner === p.id && c.status === 'pending').length}건</dd></div><div><dt>교환 비율</dt><dd>${p.divisor}:1</dd></div><div><dt>최소</dt><dd>${format(p.min)} P</dd></div><div><dt>대기</dt><dd>${rows.filter(r => r.status === 'pending').length}건</dd></div><div><dt>누적 적립</dt><dd>${format(done.filter(r => !r.reversed).reduce((s, r) => s + r.points, 0))} P</dd></div><div><dt>연결 회원</dt><dd>${state.accounts.filter(a => a.links?.[p.id]?.verified).length}명</dd></div><div><dt>승인 시간</dt><dd>${escape(p.approval)}</dd></div><div><dt>일일 한도</dt><dd>${p.dailyLimit ? format(p.dailyLimit) + ' P' : '없음'}</dd></div><div><dt>2차 승인</dt><dd>${p.reviewOver ? format(p.reviewOver) + ' P 초과' : '없음'}</dd></div></dl>
+      <dl class="mini-dl"><div><dt>연동 방식</dt><dd>${p.flow === 'pull' ? '교환 신청' : '웹하드 전환'}</dd></div><div><dt>전환 수수료</dt><dd>${feePercent(p)}%</dd></div><div><dt>확정 대기</dt><dd>${(state.confirmations ?? []).filter(c => c.partner === p.id && c.status === 'pending').length}건</dd></div><div><dt>정산 주기</dt><dd>${escape((settleCycles[p.settleCycle ?? 'monthly'] ?? '').split(' (')[0])}</dd></div><div><dt>받을 정산금</dt><dd>${(() => { const r = receivables(state, p.id); return format(r.issued + r.unissued) + '원'; })()}</dd></div><div><dt>교환 비율</dt><dd>${p.divisor}:1</dd></div><div><dt>최소</dt><dd>${format(p.min)} P</dd></div><div><dt>대기</dt><dd>${rows.filter(r => r.status === 'pending').length}건</dd></div><div><dt>누적 적립</dt><dd>${format(done.filter(r => !r.reversed).reduce((s, r) => s + r.points, 0))} P</dd></div><div><dt>연결 회원</dt><dd>${state.accounts.filter(a => a.links?.[p.id]?.verified).length}명</dd></div><div><dt>승인 시간</dt><dd>${escape(p.approval)}</dd></div><div><dt>일일 한도</dt><dd>${p.dailyLimit ? format(p.dailyLimit) + ' P' : '없음'}</dd></div><div><dt>2차 승인</dt><dd>${p.reviewOver ? format(p.reviewOver) + ' P 초과' : '없음'}</dd></div></dl>
       <div class="partner-actions">${action('정책 수정', 'partner-edit', `data-id="${p.id}"`, 'btn outline sm', 'edit')}</div></article>`;
   }).join('')}</div>`;
 }
@@ -148,6 +182,7 @@ export function partnerForm(p, demo = false) {
     <div><label for="pe-limit">일일 승인 한도 (스마일 P)</label><input id="pe-limit" name="dailyLimit" type="number" min="0" value="${p.dailyLimit ?? 0}" required><small class="muted">0은 제한 없음</small></div>
     <div><label for="pe-review">2차 승인 기준 (건당 초과 P)</label><input id="pe-review" name="reviewOver" type="number" min="0" value="${p.reviewOver ?? 0}" required><small class="muted">0은 2차 승인 없음</small></div></div>
     <label class="switch"><input type="checkbox" name="active" ${p.active ? 'checked' : ''}><i></i>교환 서비스 운영</label>
+    <div class="field-grid"><div><label for="pe-cycle">정산 주기</label><select id="pe-cycle" name="settleCycle">${Object.entries(settleCycles).map(([id, label]) => `<option value="${id}" ${(p.settleCycle ?? 'monthly') === id ? 'selected' : ''}>${label}</option>`).join('')}</select></div><div><label for="pe-due">입금 기한 (기간 종료 후 일)</label><input id="pe-due" name="settleDue" type="number" min="0" max="60" value="${p.settleDue ?? 10}" required></div></div>
     ${demo ? `<label class="switch"><input type="checkbox" name="demoAutoApprove" ${p.demoAutoApprove ? 'checked' : ''}><i></i>데모: 포인트 확정을 3초 뒤 자동 승인 (웹하드 서버 흉내)</label>` : ''}
     <p class="muted small">변경 내용은 즉시 사용자 화면에 반영되고 감사 기록에 남습니다. 이미 접수된 신청은 신청 당시 비율로 처리됩니다. 한도를 넘거나 기준보다 큰 교환은 제휴사가 승인해도 최고 관리자 2차 승인 후 적립됩니다.</p>
     <button class="btn primary" type="submit">저장</button></form>`;
@@ -356,7 +391,8 @@ export function adminPage(state, me, page, ui, { profilePage, supportPage }) {
     case 'requests': {
       const ex = rows.filter(r => r.type === 'exchange' && r.flow !== 'push');
       const asks = (state.confirmations ?? []).filter(item => !ui.partner || item.partner === ui.partner);
-      return `${panel('포인트 확정 · 웹하드 승인 대기', confirmationTable(state, asks.filter(item => item.status === 'pending'), { showUser: true, actions: true }), pill(asks.filter(item => item.status === 'pending').length + '건', 'pending'))}
+      const waiting = asks.filter(item => item.status === 'pending');
+      return `${panel('포인트 확정 · 웹하드 승인 대기', confirmationTable(state, waiting, { showUser: true, actions: true, resend: true }), waiting.length > 1 ? action(`${waiting.length}건 모두 승인`, 'confirm-approve-all', `data-ids="${waiting.map(c => c.id).join(',')}"`, 'btn outline sm', 'check') : pill(waiting.length + '건', 'pending'))}
         <p class="muted small">정상적으로는 웹하드가 API로 승인합니다. 웹하드 장애 등으로 승인이 오지 않을 때, 웹하드와 확인한 뒤 대신 승인하거나 거절하세요. 처리 내용은 웹하드에 웹훅으로 알리고 감사 기록에 남습니다.</p>
         ${panel('최근 확정 처리', confirmationTable(state, asks.filter(item => item.status !== 'pending').slice(0, 30), { showUser: true }))}
         <h2 class="section-label">이전 방식 교환 신청</h2><div class="tabs">${[['', '전체'], ...state.partners.map(p => [p.id, escape(p.name)])].map(([v, l]) => `<button type="button" class="tab ${(ui.partner ?? '') === v ? 'active' : ''}" data-action="ui" data-key="partner" data-value="${v}">${l} <b>${ex.filter(r => r.status === 'pending' && (!v || r.partner === v)).length}</b></button>`).join('')}</div>
@@ -367,6 +403,7 @@ export function adminPage(state, me, page, ui, { profilePage, supportPage }) {
     case 'transactions': return `${activityFilters(ui, ['exchange', 'withdrawal', 'charge', 'coupon', 'attendance', 'reward', 'adjust', 'gift_out', 'gift_in', 'reversal'])}<section class="panel" data-csv>${table(state, applyFilters(state, rows, ui), me, { showUser: true, showUpdate: true })}</section>`;
     case 'products': return products(state);
     case 'orders': return orders(state, me);
+    case 'statements': return statementsPage(state, me, ui);
     case 'settlement': return `<div class="tabs">${[7, 14, 30].map(d => `<button type="button" class="tab ${(Number(ui.days) || 14) === d ? 'active' : ''}" data-action="ui" data-key="days" data-value="${d}">최근 ${d}일</button>`).join('')}</div>${settlementTable(state, state.partners, Number(ui.days) || 14)}`;
     case 'support': return supportPage(state, me, true, ui);
     case 'content': return content(state);

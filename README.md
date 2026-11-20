@@ -72,6 +72,20 @@ npm.cmd run dev
 - **출금 수수료**: 출금 금액 × 수수료율(부가세 포함, 기본 **5.5%**, 원 단위 반올림). **최소 출금 금액** 기본 **10,000 P**. 둘 다 최고 관리자 > 운영 설정에서 바꿉니다. 회원 등급별 수수료 할인은 선택 사항(기본 꺼짐)입니다.
 - **수익**: 출금 수수료 + 쿠폰·상품권 마진(판매 포인트 − 공급가). 상품마다 공급가를 등록하고, 통계 리포트에서 월별 수수료·마진을 확인합니다.
 
+## 웹하드 정산서
+
+- 제휴사마다 **정산 주기**(주 1회 월~일 · 월 2회 1~15일/16일~말일 · 월 1회)와 **입금 기한**(기간 종료 후 N일, 기본 10일)을 정합니다 (최고 관리자 > 제휴사 관리 > 정책 수정).
+- 정산 금액 = 기간 안에 웹하드가 사용 승인한(확정 완료) 스마일 포인트 합계 (1 P = 1원, 회수된 건 제외). 진행 중인 기간은 실시간 집계됩니다.
+- 최고 관리자 > **웹하드 정산서**: 기간이 끝난 정산서를 발행 → 입금되면 **입금 확인**(금액이 다르면 메모 필수) · 입금 전이면 취소 후 재발행. 발행 후 회수 등으로 금액이 바뀌면 '발행 후 변동'으로 표시합니다. 기간 상세(확정 승인 내역)와 CSV를 볼 수 있습니다.
+- 웹하드 관리자 > **정산서**: 발행된 정산서를 **확인**하거나 **이의 제기**(운영팀 알림). 자사 서버는 `GET /api/v1/statements` 또는 웹훅 `settlement.issued` · `settlement.canceled`로 받습니다.
+- 운영 개요의 **자금 현황**에서 회원 보유 포인트(출금 가능·충전 잔액), 출금 처리 중, 미확정·승인 대기, 웹하드에서 받을 정산금, 이번 달 수익(출금 수수료 + 쿠폰 마진)과 카드 충전액을 한눈에 봅니다. 입금 기한이 지난 정산서·이의 제기·발행 대기 정산은 '확인이 필요한 일'에 표시됩니다.
+
+## 그 밖의 운영 기능
+
+- **회원 관리 메모**: 회원 상세에서 응대 기록 등을 남깁니다. 최고 관리자에게만 보이고 감사 기록에 남습니다. 회원 상세에서 해당 회원의 확정 요청과 **전체 거래 보기**로 바로 이동할 수 있습니다.
+- **확정 요청 재전송·일괄 승인**: 웹하드가 웹훅을 놓쳤을 때 최고 관리자가 사용 요청을 다시 보낼 수 있고, 웹하드 관리자·최고 관리자는 대기 중인 확정 요청을 한 번에 승인할 수 있습니다.
+- **거래 확인증**: 완료된 출금·충전·쿠폰·교환 거래는 거래 상세에서 확인증을 인쇄(PDF 저장)할 수 있습니다.
+
 ## 출금 지급대행(펌뱅킹) 연동
 
 출금은 **신청 → 심사 → 계좌 이체 → 입금 완료** 순서로 진행되며, 회원과 관리자 화면 모두에서 단계를 확인할 수 있습니다.
@@ -92,7 +106,7 @@ npm.cmd run dev
 | 구분 | 주소 | 인증 |
 | --- | --- | --- |
 | 서비스 | `GET /api/health`, `GET /api/state`, `POST /api/action` | 세션 쿠키 + `X-SmilePoint: 1` 헤더 |
-| 제휴사(웹하드) — 전환·확정 | `POST /api/v1/transfers` `{transferId, member, source, points}` (전환 전송), `GET /api/v1/transfers?status=unconfirmed\|confirming\|confirmed\|canceled`, `GET /api/v1/transfers/{transferId}`, `POST /api/v1/transfers/{transferId}/cancel`, `GET /api/v1/confirmations?status=pending`, `POST /api/v1/confirmations/{id}/approve`, `POST /api/v1/confirmations/{id}/reject` `{reason}` · 실패 응답의 `error`: `member_not_linked`, `invalid_amount`, `invalid_transfer_id`, `partner_inactive` 등 | `X-Api-Key` |
+| 제휴사(웹하드) — 전환·확정 | `POST /api/v1/transfers` `{transferId, member, source, points}` (전환 전송), `GET /api/v1/transfers?status=unconfirmed\|confirming\|confirmed\|canceled`, `GET /api/v1/transfers/{transferId}`, `POST /api/v1/transfers/{transferId}/cancel`, `GET /api/v1/confirmations?status=pending`, `POST /api/v1/confirmations/{id}/approve`, `POST /api/v1/confirmations/{id}/reject` `{reason}`, `GET /api/v1/statements` (정산서) · 실패 응답의 `error`: `member_not_linked`, `invalid_amount`, `invalid_transfer_id`, `partner_inactive` 등 | `X-Api-Key` |
 | 제휴사(웹하드) — 이전 방식·공통 | `GET /api/v1/exchanges?status=pending&limit=100&offset=0` (응답 `next`로 다음 페이지), `POST /api/v1/exchanges/{id}/approve`, `POST /api/v1/exchanges/{id}/reject`, `POST /api/v1/exchanges/{id}/reverse` (완료 30일 이내 회수), `GET /api/v1/link-requests` (회원 연결 인증번호), `GET /api/v1/settlements?date=YYYY-MM-DD`, `POST /api/v1/settlements/{YYYY-MM-DD}` (자사 합계 `{count, amount}` 제출 → 일치/불일치) | `X-Api-Key` (웹하드 관리자 > API·연동에서 확인) |
 | 소셜 로그인 | `/auth/kakao`, `/auth/naver`, `/auth/google` | `.env`에 키가 있을 때 실제 OAuth, 없으면 데모 동의 화면 |
 | 지급대행 결과 통지 | `POST /api/payout/webhook` | `X-Payout-Signature` HMAC 서명 |

@@ -1,14 +1,16 @@
 import { escape, format, icon } from '../catalog.js';
 import { account, feePercent, kstDay, linkRequests, monthly, series, settlementStatus, visibleTransactions } from '../state.js';
 import { activityFilters, applyFilters, confirmationTable } from './user.js';
+import { statementsPage } from './settle.js';
 import { action, ago, avatar, barChart, blank, button, donut, metric, money, panel, pill, showTime, table, trend } from './ui.js';
 
 export const partnerMenu = [
   ['업무', [['overview', 'home', '자사 개요'], ['confirms', 'check', '포인트 확정 요청'], ['requests', 'exchange', '회원 연결·교환'], ['activity', 'file', '거래 내역'], ['members', 'users', '회원 현황']]],
-  ['정산·분석', [['settlement', 'chart', '정산 및 대사'], ['report', 'activity', '통계 리포트']]],
+  ['정산·분석', [['statements', 'wallet', '정산서'], ['settlement', 'chart', '정산 및 대사'], ['report', 'activity', '통계 리포트']]],
   ['연동·정책', [['integration', 'key', 'API · 연동'], ['policy', 'settings', '교환 정책']]],
 ];
 export const partnerDescriptions = {
+  statements: '스마일 포인트가 발행한 정산서를 확인하고, 금액이 맞으면 확인을, 다르면 이의를 제기하세요.',
   confirms: '회원이 확정한 포인트의 사용 승인 요청을 처리하고, 스마일 포인트로 보낸 전환 내역을 확인하세요.',
   requests: '회원 연결 인증번호와 (이전 방식) 교환 신청을 처리하세요.',
   activity: '자사 교환 거래 전체를 기간·상태별로 조회하세요.',
@@ -45,14 +47,14 @@ function overview(state, me, partner) {
   const members = new Set(rows.map(row => row.userId)).size;
   const count = status => rows.filter(row => row.status === status).length;
   return `<section class="dash-banner partner-banner"><div><span class="eyebrow">웹하드 관리자 · ${escape(partner.name)}</span>
-      <h1>${escape(me.name)}님, 사용 승인을 기다리는 포인트 확정 요청이 ${asks.length}건 있어요.</h1><p>승인하면 회원의 사용 가능 포인트로 바뀌고, 그 금액이 스마일 포인트 정산 대상이 됩니다.</p>
-      <div class="banner-actions">${button('확정 요청 처리', '#app/partner/confirms', 'btn lime sm', 'check')}${button('정산 보기', '#app/partner/settlement', 'btn ghost sm', 'chart')}</div></div>
+      <h1>${escape(me.name)}님, ${asks.length ? `사용 승인을 기다리는 포인트 확정 요청이 ${asks.length}건 있어요.` : '지금 처리할 포인트 확정 요청은 없어요.'}</h1><p>승인하면 회원의 사용 가능 포인트로 바뀌고, 그 금액이 스마일 포인트 정산 대상이 됩니다.</p>
+      <div class="banner-actions">${button('확정 요청 처리', '#app/partner/confirms', 'btn lime sm', 'check')}${button('정산서 보기', '#app/partner/statements', 'btn ghost sm', 'wallet')}</div></div>
       <span class="partner-logo ${partner.color} xl">${escape(partner.initials)}</span></section>
     <div class="card-grid metrics four">
       ${metric('확정 승인 대기', asks.length + '건', 'clock', `${format(asks.reduce((s, r) => s + r.points, 0))} 스마일 P${pending.length ? ` · 교환 대기 ${pending.length}건` : ''}`, 2)}
       ${metric('오늘 승인', approvedToday.length + '건', 'check', `${format(approvedToday.reduce((s, r) => s + r.source, 0))} P 차감`, 0)}
       ${metric('최근 7일 신청액', format(thisWeek) + ' P', 'activity', '자사 포인트 기준', 1, trend(thisWeek, lastWeek))}
-      ${metric('평균 처리 시간', elapsed(rows), 'refresh', `교환 회원 ${members}명`, 3)}
+      ${(() => { const open = (state.statements ?? []).filter(item => item.status === 'issued'); const next = open.map(item => item.due).sort()[0]; return metric('입금할 정산금', format(open.reduce((s, r) => s + r.points, 0)) + '원', 'wallet', open.length ? `정산서 ${open.length}건 · 가장 빠른 기한 ${next}` : `평균 처리 ${elapsed(rows)} · 교환 회원 ${members}명`, 3); })()}
     </div>
     <div class="dash-grid two-one">
       ${panel('최근 14일 교환 신청액', barChart(daily, { tone: 'blue' }))}
@@ -211,9 +213,9 @@ function confirmsPage(state, me, partner, ui) {
   const sum = status => rows.filter(row => row.status === status).reduce((s, row) => s + row.points, 0);
   const demo = state.server?.demo !== false;
   return `<div class="summary-strip"><div><span>승인 대기</span><strong class="${pending.length ? 'minus' : ''}">${pending.length}건 · ${format(pending.reduce((s, r) => s + r.points, 0))} P</strong></div><div><span>회원 미확정 보유</span><strong>${format(sum('held'))} P</strong></div><div><span>확정 완료(정산 대상)</span><strong>${format(sum('complete'))} P</strong></div><div><span>승인 방식</span><strong>${demo ? (partner.demoAutoApprove ? '자동 승인(데모)' : '담당자 승인') : 'API 승인'}</strong></div></div>
-    ${panel('사용 승인 대기', confirmationTable(state, pending, { actions: true }), pill(pending.length + '건', pending.length ? 'pending' : 'complete'))}
+    ${panel('사용 승인 대기', confirmationTable(state, pending, { actions: true }), pending.length > 1 ? action(`${pending.length}건 모두 승인`, 'confirm-approve-all', `data-ids="${pending.map(c => c.id).join(',')}"`, 'btn outline sm', 'check') : pill(pending.length + '건', pending.length ? 'pending' : 'complete'))}
     <p class="muted small">보통은 자사 서버가 웹훅 <code>points.confirm_requested</code>를 받아 <code>POST /api/v1/confirmations/{id}/approve</code>로 자동 승인합니다. 이 화면은 수동 확인·장애 대응용입니다.</p>
-    ${panel('확정 처리 내역', confirmationTable(state, list.filter(item => item.status !== 'pending').slice(0, 50)))}
+    <section class="panel" data-csv><div class="panel-head"><h2>확정 처리 내역</h2>${action('CSV', 'csv', 'data-name="확정처리내역"', 'btn outline sm', 'download')}</div>${confirmationTable(state, list.filter(item => item.status !== 'pending'))}</section>
     <div class="dash-grid two-one">
       ${panel('스마일 포인트로 보낸 전환', table(state, rows.slice(0, 30), me, { showUser: true, showUpdate: true, empty: '보낸 전환이 없습니다.' }))}
       <details class="panel create-box" ${ui.transferOpen ? 'open' : ''}><summary>${icon('plus', 18)} 전환 직접 등록</summary><form class="stack" data-form="partner-transfer">
@@ -231,6 +233,7 @@ export function partnerPage(state, me, page, ui, profilePage) {
   switch (page) {
     case 'overview': return overview(state, me, partner);
     case 'confirms': return confirmsPage(state, me, partner, ui);
+    case 'statements': return statementsPage(state, me, ui);
     case 'requests': return `${linkPanel(state, me.partnerId)}${pendingQueue(state, me, rows)}${panel('처리 내역', table(state, rows.filter(row => row.status !== 'pending'), me, { showUser: true, showUpdate: true }))}`;
     case 'activity': return `${activityFilters(ui, ['exchange'])}<section class="panel" data-csv>${table(state, applyFilters(state, rows, ui), me, { showUser: true, showUpdate: true })}</section>`;
     case 'members': return membersPage(state, me, ui);

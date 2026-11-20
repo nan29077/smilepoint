@@ -106,7 +106,7 @@ export function freshState(now = new Date()) {
         notify: { email: true, sms: false, marketing: i % 2 === 0 },
       })),
     ],
-    transactions: [], tickets: [], notifications: [], audit: [], attendance: {}, apiLogs: [], webhooks: [], confirmations: [],
+    transactions: [], tickets: [], notifications: [], audit: [], attendance: {}, apiLogs: [], webhooks: [], confirmations: [], statements: [], memos: [],
   };
   for (const account of state.accounts) {
     account.password = pw;
@@ -170,7 +170,7 @@ export function freshState(now = new Date()) {
   for (const row of state.transactions.filter(r => r.type === 'exchange').slice(0, 40)) {
     state.apiLogs.push({ id: 'A-' + row.id, partner: row.partner, method: 'POST', path: '/api/v1/exchanges/' + row.id + (row.status === 'complete' ? '/approve' : row.status === 'rejected' ? '/reject' : ''), status: 200, ms: 80 + Math.floor(random() * 140), date: row.updated ?? row.date, source: row.status === 'pending' ? 'webhook' : 'partner-api' });
   }
-  log(state, 'a1', '설정 변경', '운영 설정', '출금 수수료 500 P, 최소 출금 5,000 P', at(30));
+  log(state, 'a1', '설정 변경', '운영 설정', '출금 수수료 5.5%(부가세 포함) · 최소 출금 10,000 P', at(30));
   log(state, 'a1', '공지 등록', 'n3', '디스크온 제휴 오픈 기념 교환 이벤트', at(0, 8));
   state.webhardBalances = {};
   for (const item of state.accounts) for (const [partnerId, link] of Object.entries(item.links ?? {})) {
@@ -181,6 +181,12 @@ export function freshState(now = new Date()) {
   // 처리 대기였던 샘플 교환은 새 방식(웹하드에서 넘어온 미확정 포인트)으로 둔다.
   for (const row of state.transactions) if (row.type === 'exchange' && row.status === 'pending') Object.assign(row, { status: 'held', flow: 'push', transferId: 'WH-' + row.id.slice(3) });
   state.events = [{ id: 'e1', partner: 'disk', rate: 5, until: '2026-11-30', firstOnly: true, active: true, title: '디스크온 첫 교환 5% 추가 적립' }];
+  // 정산서 샘플: 클라우드박스는 주 1회(지난 기간 정산서 발행됨 → 입금 확인 대기), 파일가든은 월 2회(발행 대기), 나머지는 월 1회
+  for (const partner of state.partners) Object.assign(partner, { settleCycle: { cloud: 'weekly', file: 'semimonthly' }[partner.id] ?? 'monthly', settleDue: 10 });
+  try {
+    const closed = statementPeriods(state, 'cloud', 8).filter(period => !period.current && period.live.count);
+    if (closed.length) issueStatement(state, 'a1', 'cloud', closed[closed.length - 1].from);
+  } catch { /* 샘플이 없으면 건너뛴다 */ }
   return state;
 }
 
@@ -189,7 +195,7 @@ export function productionState({ adminEmail, adminName = '서비스 운영자',
   const fresh = freshState();
   return {
     version: 2, seq: 1000, settings: { ...fresh.settings, mockWebhardBalance: false, payoutMode: 'manual' }, session: null,
-    partners: [], products: [], announcements: [], events: [], confirmations: [],
+    partners: [], products: [], announcements: [], events: [], confirmations: [], statements: [], memos: [],
     accounts: [{ id: 'a1', role: 'admin', name: adminName, email: adminEmail, phone: '', provider: 'email', status: 'active', createdAt: new Date().toISOString(), password: passwordHash, avatar: 0, photo: '' }],
     transactions: [], tickets: [], notifications: [], audit: [], attendance: {}, apiLogs: [], webhooks: [], webhardBalances: {}, resets: [], settlements: {},
   };
@@ -708,6 +714,183 @@ export function cancelCharge(state, adminId, id, reason) {
   return row;
 }
 
+// ───────── 웹하드 정산서 ─────────
+// 정산 금액 = 기간 안에 웹하드가 사용 승인한(확정 완료) 스마일 포인트 합계 (1 P = 1원). 회수된 건은 빠진다.
+// 기간이 끝나면 최고 관리자가 정산서를 발행 → 웹하드가 확인(또는 이의 제기) → 입금되면 입금 확인.
+export const settleCycles = { weekly: '주 1회 (월~일)', semimonthly: '월 2회 (1~15일 · 16일~말일)', monthly: '월 1회 (1일~말일)' };
+const pad2 = n => String(n).padStart(2, '0');
+export const dayAdd = (day, n) => { const t = new Date(day + 'T00:00:00Z'); t.setUTCDate(t.getUTCDate() + n); return t.toISOString().slice(0, 10); };
+export function periodOf(cycle, day) {
+  const [y, m, d] = day.split('-').map(Number);
+  const last = new Date(Date.UTC(y, m, 0)).getUTCDate();
+  if (cycle === 'weekly') { const from = dayAdd(day, -((new Date(day + 'T00:00:00Z').getUTCDay() + 6) % 7)); return { from, to: dayAdd(from, 6) }; }
+  if (cycle === 'semimonthly') return d <= 15 ? { from: `${y}-${pad2(m)}-01`, to: `${y}-${pad2(m)}-15` } : { from: `${y}-${pad2(m)}-16`, to: `${y}-${pad2(m)}-${pad2(last)}` };
+  return { from: `${y}-${pad2(m)}-01`, to: `${y}-${pad2(m)}-${pad2(last)}` };
+}
+export function statementRows(state, partnerId, from, to) {
+  return state.transactions.filter(row => row.type === 'exchange' && row.partner === partnerId && row.status === 'complete' && !row.reversed && kstDay(row.updated ?? row.date) >= from && kstDay(row.updated ?? row.date) <= to);
+}
+export function statementTotals(state, partnerId, from, to) {
+  const rows = statementRows(state, partnerId, from, to);
+  return { count: rows.length, points: rows.reduce((s, r) => s + r.points, 0), source: rows.reduce((s, r) => s + r.source, 0) };
+}
+const activeStatement = (state, partnerId, from) => (state.statements ?? []).find(item => item.partner === partnerId && item.from === from && item.status !== 'canceled');
+// 최근 정산 기간 목록 (진행 중인 기간 포함). 거래도 정산서도 없는 지난 기간은 뺀다.
+export function statementPeriods(state, partnerId, count = 8) {
+  const partner = partnerOf(state, partnerId);
+  if (!partner) return [];
+  const cycle = partner.settleCycle ?? 'monthly';
+  const today = kstDay();
+  const list = [];
+  let period = periodOf(cycle, today);
+  for (let i = 0; i < count; i++) {
+    const live = statementTotals(state, partnerId, period.from, period.to);
+    const record = activeStatement(state, partnerId, period.from) ?? null;
+    const current = period.to >= today;
+    if (current || live.count || record) list.push({ ...period, cycle, current, live, record, changed: !!record && (record.points !== live.points || record.count !== live.count) });
+    period = periodOf(cycle, dayAdd(period.from, -1));
+  }
+  return list;
+}
+// 받을 돈: 발행했지만 입금 전 + 기간이 끝났지만 아직 발행 전 + 진행 중인 기간 누적
+export function receivables(state, partnerId) {
+  const ids = partnerId ? [partnerId] : state.partners.map(p => p.id);
+  const out = { issued: 0, unissued: 0, current: 0, paidThisMonth: 0 };
+  const month = kstDay().slice(0, 7);
+  for (const id of ids) {
+    for (const period of statementPeriods(state, id, 12)) {
+      if (period.current) out.current += period.live.points;
+      else if (!period.record) out.unissued += period.live.points;
+    }
+    for (const item of (state.statements ?? []).filter(s => s.partner === id)) {
+      if (item.status === 'issued') out.issued += item.points;
+      if (item.status === 'paid' && kstDay(item.paidAt).slice(0, 7) === month) out.paidThisMonth += item.paidAmount ?? item.points;
+    }
+  }
+  return out;
+}
+export function issueStatement(state, adminId, partnerId, from) {
+  admin(state, adminId);
+  const partner = partnerOf(state, partnerId) ?? fail('제휴사를 찾을 수 없습니다.');
+  const cycle = partner.settleCycle ?? 'monthly';
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(String(from))) fail('정산 기간을 확인해 주세요.');
+  const period = periodOf(cycle, from);
+  if (period.from !== from) fail('정산 주기와 맞지 않는 기간입니다. 화면을 새로 고친 뒤 다시 시도해 주세요.');
+  if (period.to >= kstDay()) fail('정산 기간이 끝난 뒤에 발행할 수 있습니다.');
+  if (activeStatement(state, partnerId, from)) fail('이미 발행한 정산서가 있습니다.');
+  const totals = statementTotals(state, partnerId, period.from, period.to);
+  if (!totals.count) fail('이 기간에 정산할 거래가 없습니다.');
+  state.statements ??= [];
+  const base = `ST-${partnerId}-${period.from.replaceAll('-', '')}`;
+  const id = state.statements.some(s => s.id === base) ? `${base}-${state.statements.filter(s => s.id.startsWith(base)).length + 1}` : base;
+  const now = new Date().toISOString();
+  const due = dayAdd(period.to, partner.settleDue ?? 10);
+  const record = { id, partner: partnerId, cycle, ...period, ...totals, status: 'issued', issuedAt: now, issuedBy: adminId, due };
+  state.statements.unshift(record);
+  notify(state, 'partner:' + partnerId, `${period.from} ~ ${period.to} 정산서가 발행되었습니다. 정산 금액 ${totals.points.toLocaleString('ko-KR')}원 · 입금 기한 ${due}`, 'app/partner/statements');
+  queueWebhook(state, partnerId, 'settlement.issued', { statementId: id, from: period.from, to: period.to, count: totals.count, amount: totals.points, source: totals.source, due });
+  log(state, adminId, '정산서 발행', partner.name, `${period.from}~${period.to} · ${totals.count}건 · ${totals.points.toLocaleString('ko-KR')}원 · 기한 ${due}`);
+  return record;
+}
+const statementOf = (state, id) => (state.statements ?? []).find(item => item.id === id) ?? fail('정산서를 찾을 수 없습니다.', 404);
+export function markStatementPaid(state, adminId, id, { amount, memo = '' } = {}) {
+  admin(state, adminId);
+  const item = statementOf(state, id);
+  if (item.status !== 'issued') fail('발행 상태인 정산서만 입금 확인할 수 있습니다.');
+  amount = amount === undefined || amount === '' ? item.points : int(Number(amount));
+  if (!(amount >= 0 && amount <= 1000000000)) fail('입금 금액을 확인해 주세요.');
+  memo = clip(memo, 100);
+  if (amount !== item.points && !memo) fail('정산 금액과 입금 금액이 다르면 메모를 남겨 주세요.');
+  Object.assign(item, { status: 'paid', paidAt: new Date().toISOString(), paidBy: adminId, paidAmount: amount, ...(memo ? { memo } : {}) });
+  const partner = partnerOf(state, item.partner);
+  notify(state, 'partner:' + item.partner, `${item.from} ~ ${item.to} 정산금 ${amount.toLocaleString('ko-KR')}원 입금이 확인되었습니다.`, 'app/partner/statements');
+  log(state, adminId, '정산 입금 확인', partner?.name ?? item.partner, `${item.from}~${item.to} · ${amount.toLocaleString('ko-KR')}원${amount !== item.points ? ` (정산 ${item.points.toLocaleString('ko-KR')}원 · ${memo})` : ''}`);
+  return item;
+}
+export function cancelStatement(state, adminId, id, reason) {
+  admin(state, adminId);
+  const item = statementOf(state, id);
+  if (item.status !== 'issued') fail('입금 전(발행) 정산서만 취소할 수 있습니다.');
+  reason = clip(reason, 100);
+  if (!reason) fail('취소 사유를 입력해 주세요.');
+  Object.assign(item, { status: 'canceled', canceledAt: new Date().toISOString(), canceledBy: adminId, reason });
+  notify(state, 'partner:' + item.partner, `${item.from} ~ ${item.to} 정산서가 취소되었습니다. 사유: ${reason}`, 'app/partner/statements');
+  queueWebhook(state, item.partner, 'settlement.canceled', { statementId: item.id, reason });
+  log(state, adminId, '정산서 취소', partnerOf(state, item.partner)?.name ?? item.partner, `${item.from}~${item.to} · ${reason}`);
+  return item;
+}
+const partnerStatement = (state, actorId, id) => {
+  const actor = account(state, actorId);
+  const item = (state.statements ?? []).find(entry => entry.id === id);
+  if (!item || actor?.role !== 'partner' || actor.partnerId !== item.partner) fail('정산서를 찾을 수 없습니다.', 404);
+  if (!['issued', 'paid'].includes(item.status)) fail('취소된 정산서입니다.');
+  return { actor, item };
+};
+export function ackStatement(state, actorId, id) {
+  const { actor, item } = partnerStatement(state, actorId, id);
+  item.ack = { at: new Date().toISOString(), by: actorId };
+  delete item.dispute;
+  log(state, actorId, '정산서 확인', item.id, `${item.from}~${item.to} · ${item.points.toLocaleString('ko-KR')}원`);
+  notify(state, 'admin', `${partnerOf(state, item.partner)?.name ?? ''} ${actor.name}님이 ${item.from}~${item.to} 정산서를 확인했습니다.`, 'app/admin/statements');
+  return item;
+}
+export function disputeStatement(state, actorId, id, message) {
+  const { actor, item } = partnerStatement(state, actorId, id);
+  message = clip(message, 300);
+  if (!message) fail('이의 내용을 입력해 주세요.');
+  item.dispute = { at: new Date().toISOString(), by: actorId, message };
+  delete item.ack;
+  log(state, actorId, '정산서 이의 제기', item.id, message);
+  notify(state, 'admin', `${partnerOf(state, item.partner)?.name ?? ''} ${item.from}~${item.to} 정산서 이의 제기: ${message}`, 'app/admin/statements');
+  return item;
+}
+
+// ───────── 회원 관리 메모 (최고 관리자만 열람) ─────────
+export function addMemo(state, adminId, userId, text) {
+  admin(state, adminId);
+  const me = account(state, adminId);
+  const target = account(state, userId);
+  if (!target || target.role !== 'user') fail('회원을 찾을 수 없습니다.');
+  text = clip(text, 300);
+  if (!text) fail('메모 내용을 입력해 주세요.');
+  const memo = { id: 'M-' + Date.now().toString(36) + randomChars('abcdefghjkmnpqrstuvwxyz23456789', 3), userId, by: adminId, byName: me.name, text, at: new Date().toISOString() };
+  (state.memos ??= []).unshift(memo);
+  log(state, adminId, '회원 메모', target.name, text.slice(0, 40));
+  return memo;
+}
+export function deleteMemo(state, adminId, id) {
+  admin(state, adminId);
+  const index = (state.memos ?? []).findIndex(item => item.id === id);
+  if (index < 0) fail('메모를 찾을 수 없습니다.');
+  const [memo] = state.memos.splice(index, 1);
+  log(state, adminId, '회원 메모 삭제', account(state, memo.userId)?.name ?? '', memo.text.slice(0, 40));
+}
+
+// ───────── 확정 요청 보조 기능 ─────────
+// 웹하드가 웹훅을 놓쳤을 때: 사용 요청(points.confirm_requested)을 다시 보낸다.
+export function resendConfirm(state, actorId, id) {
+  const { item } = confirmationOf(state, actorId, id);
+  if (item.status !== 'pending') fail('승인 대기 중인 요청만 다시 보낼 수 있습니다.');
+  const now = new Date().toISOString();
+  queueWebhook(state, item.partner, 'points.confirm_requested', { confirmationId: item.id, member: item.member, points: item.points, source: item.source, transfers: item.transfers, requestedAt: item.date, resend: (item.resent ?? 0) + 1 });
+  Object.assign(item, { resent: (item.resent ?? 0) + 1, resentAt: now });
+  log(state, actorId, '확정 요청 재전송', item.id, `${partnerOf(state, item.partner)?.name ?? ''} · ${item.points.toLocaleString('ko-KR')} P · ${item.resent}회째`);
+  return item;
+}
+// 여러 확정 요청을 한 번에 승인 (웹하드 관리자·최고 관리자)
+export function approveConfirms(state, actorId, ids = []) {
+  const list = [...new Set(Array.isArray(ids) ? ids : [])].slice(0, 200);
+  if (!list.length) fail('승인할 요청을 선택해 주세요.');
+  let done = 0;
+  for (const id of list) {
+    const { item } = confirmationOf(state, actorId, id);
+    if (item.status !== 'pending') continue;
+    approveConfirm(state, actorId, id);
+    done++;
+  }
+  return { done };
+}
+
 // ───────── 계좌·출금 ─────────
 // 출금 계좌 등록 1단계(1원 인증): 계좌로 1원을 보내며 입금자명에 4자리 숫자를 넣고, 회원이 그 숫자를 입력하면 인증된다.
 // 서버는 BANK_VERIFY_URL(지급대행·펌뱅킹 업체)이 있으면 그곳으로 송금을 요청하고, 없으면 최고 관리자가 확인 후 승인한다.
@@ -1072,7 +1255,7 @@ export function setMemberStatus(state, adminId, userId, status) {
   target.status = status;
   log(state, adminId, status === 'active' ? '이용 정지 해제' : '이용 정지', userId, target.name);
 }
-export function updatePartner(state, adminId, partnerId, { divisor, min, active, dailyLimit, reviewOver, flow, demoAutoApprove }) {
+export function updatePartner(state, adminId, partnerId, { divisor, min, active, dailyLimit, reviewOver, flow, demoAutoApprove, settleCycle, settleDue }) {
   admin(state, adminId);
   const partner = partnerOf(state, partnerId) ?? fail('제휴사를 찾을 수 없습니다.');
   divisor = int(Number(divisor)); min = int(Number(min));
@@ -1085,6 +1268,16 @@ export function updatePartner(state, adminId, partnerId, { divisor, min, active,
   Object.assign(partner, { divisor, min, active: !!active, dailyLimit, reviewOver });
   if (['push', 'pull'].includes(flow)) partner.flow = flow;
   if (demoAutoApprove !== undefined) partner.demoAutoApprove = !!demoAutoApprove;
+  if (settleCycle !== undefined) {
+    if (!settleCycles[settleCycle]) fail('정산 주기를 선택해 주세요.');
+    if (settleCycle !== (partner.settleCycle ?? 'monthly') && (state.statements ?? []).some(item => item.partner === partnerId && item.status === 'issued')) fail('입금 전 정산서가 있으면 정산 주기를 바꿀 수 없습니다. 입금 확인 또는 취소 후 바꿔 주세요.');
+    partner.settleCycle = settleCycle;
+  }
+  if (settleDue !== undefined && settleDue !== '') {
+    const due = int(Number(settleDue));
+    if (!(due >= 0 && due <= 60)) fail('입금 기한은 기간 종료 후 0~60일 사이로 입력해 주세요.');
+    partner.settleDue = due;
+  }
   log(state, adminId, '제휴사 정책 변경', partner.name, `${before} → ${divisor}:1 · 최소 ${min} · 일일 한도 ${dailyLimit || '없음'} · 2차 승인 ${reviewOver ? reviewOver + ' P 초과' : '없음'} · ${partner.flow === 'pull' ? '스마일 신청 방식' : '웹하드 전환 방식'} · ${active ? '운영' : '중지'}`);
 }
 const supplyOf = (value, cost) => {
@@ -1268,7 +1461,7 @@ export function createPartner(state, adminId, { name, type, divisor, min, approv
   const colors = ['green', 'blue', 'peach', 'violet'];
   const id = 'w' + Date.now().toString(36);
   const partner = { id, name, initials: name[0], color: colors[state.partners.length % colors.length], type: String(type || '판매 적립').slice(0, 20), divisor, min, approval: String(approval || '평균 1일').slice(0, 20), active: false,
-    apiKey: newApiKey(), webhook: '', ip: '', dailyLimit: 1000000, reviewOver: 100000, flow: 'push', demoAutoApprove: false };
+    apiKey: newApiKey(), webhook: '', ip: '', dailyLimit: 1000000, reviewOver: 100000, flow: 'push', demoAutoApprove: false, settleCycle: 'monthly', settleDue: 10 };
   state.partners.push(partner);
   log(state, adminId, '제휴사 등록', name, `${divisor}:1 · 최소 ${min} · 등록 직후 일시 중지 상태`);
   return partner;
@@ -1334,7 +1527,7 @@ export function snapshot(state, viewer) {
     announcements: state.announcements.filter(item => viewer?.role === 'admin' || item.visible),
     stats: publicStats(state), session: viewer ? { accountId: viewer.id } : null,
     partners: state.partners.map(publicPartner), accounts: [], transactions: [], tickets: [], notifications: [], audit: [], attendance: {}, apiLogs: [], webhooks: [],
-    events: viewer?.role === 'admin' ? (state.events ?? []) : activeEvents(state), settlements: {}, confirmations: [],
+    events: viewer?.role === 'admin' ? (state.events ?? []) : activeEvents(state), settlements: {}, confirmations: [], statements: [], memos: [],
   };
   if (!viewer) return base;
   const mine = notificationsFor(state, viewer);
@@ -1350,6 +1543,7 @@ export function snapshot(state, viewer) {
       accounts: [privateAccount(viewer), ...state.accounts.filter(a => ids.has(a.id)).map(partnerBrief)], transactions: rows, notifications: mine,
       apiLogs: (state.apiLogs ?? []).filter(item => item.partner === viewer.partnerId).slice(0, 100), webhooks: (state.webhooks ?? []).filter(item => item.partner === viewer.partnerId).slice(0, 50),
       linkRequests: linkRequests(state, viewer.partnerId), confirmations: (state.confirmations ?? []).filter(item => item.partner === viewer.partnerId),
+      statements: (state.statements ?? []).filter(item => item.partner === viewer.partnerId && item.status !== 'canceled'),
       settlements: Object.fromEntries(Object.entries(state.settlements ?? {}).filter(([key]) => key.startsWith(viewer.partnerId + ':'))) };
   }
   const rows = state.transactions.filter(row => row.userId === viewer.id);
@@ -1599,6 +1793,8 @@ export function normalize(state, demo = true) {
   if (state.settings.withdrawFeeRate === undefined) Object.assign(state.settings, feeDefaults);
   state.settings = { ...feeDefaults, ...chargeDefaults, ...state.settings };
   state.confirmations ??= [];
+  state.statements ??= [];
+  state.memos ??= [];
   for (const product of state.products ?? []) product.supplyPrice ??= defaultSupply(product.cost);
   state.events ??= [];
   state.webhardBalances ??= {};
@@ -1606,7 +1802,7 @@ export function normalize(state, demo = true) {
   state.settlements ??= {};
   state.apiLogs ??= [];
   state.webhooks ??= [];
-  for (const partner of state.partners ?? []) { partner.dailyLimit ??= 1000000; partner.reviewOver ??= 100000; partner.flow ??= 'push'; partner.demoAutoApprove ??= !!demo && partner.id !== 'green'; }
+  for (const partner of state.partners ?? []) { partner.dailyLimit ??= 1000000; partner.reviewOver ??= 100000; partner.flow ??= 'push'; partner.demoAutoApprove ??= !!demo && partner.id !== 'green'; partner.settleCycle ??= 'monthly'; partner.settleDue ??= 10; }
   for (const item of state.accounts ?? []) for (const link of Object.values(item.links ?? {})) link.verified ??= !!demo;
   for (const row of state.transactions ?? []) if (row.type === 'coupon' && row.coupon) row.coupon.revealed ??= true;
   return state;

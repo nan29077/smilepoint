@@ -494,3 +494,85 @@ test('운영 설정: 출금 수수료율·최소 금액·충전 한도 검증, �
   assert.deepEqual(old.confirmations, []);
   assert.ok(old.products.every(p => p.supplyPrice > 0));
 });
+
+test('웹하드 정산서: 기간 계산, 발행·입금 확인·취소, 웹하드 확인·이의, 미수금', () => {
+  assert.deepEqual(S.periodOf('monthly', '2026-02-14'), { from: '2026-02-01', to: '2026-02-28' });
+  assert.deepEqual(S.periodOf('semimonthly', '2026-11-20'), { from: '2026-11-16', to: '2026-11-30' });
+  assert.deepEqual(S.periodOf('semimonthly', '2026-11-15'), { from: '2026-11-01', to: '2026-11-15' });
+  assert.deepEqual(S.periodOf('weekly', '2026-11-20'), { from: '2026-11-16', to: '2026-11-22' }, '월요일 시작');
+  assert.deepEqual(S.periodOf('weekly', '2026-11-16'), { from: '2026-11-16', to: '2026-11-22' });
+  const state = fresh();
+  const today = S.kstDay();
+  // 지난 기간이 생기도록 그린파일을 주 1회로 바꾸고, 확정 완료 1건을 지난주로 옮긴다
+  S.updatePartner(state, 'a1', 'green', { ...state.partners[0], settleCycle: 'weekly', settleDue: 7 });
+  const lastWeek = S.dayAdd(S.periodOf('weekly', today).from, -3);
+  const row = state.transactions.find(r => r.type === 'exchange' && r.partner === 'green' && r.status === 'complete' && !r.reversed);
+  row.updated = lastWeek + 'T03:00:00.000Z';
+  const period = S.periodOf('weekly', lastWeek);
+  const before = S.statementTotals(state, 'green', period.from, period.to);
+  assert.ok(before.points >= row.points);
+  assert.throws(() => S.issueStatement(state, 'a1', 'green', S.periodOf('weekly', today).from), /끝난 뒤/, '진행 중 기간은 발행 불가');
+  assert.throws(() => S.issueStatement(state, 'a1', 'green', S.dayAdd(period.from, 1)), /주기와 맞지/);
+  assert.throws(() => S.issueStatement(state, 'p1', 'green', period.from), /권한/);
+  const st = S.issueStatement(state, 'a1', 'green', period.from);
+  assert.deepEqual([st.points, st.count, st.status, st.due], [before.points, before.count, 'issued', S.dayAdd(period.to, 7)]);
+  assert.ok(state.webhooks.some(h => h.event === 'settlement.issued' && h.data.statementId === st.id));
+  assert.throws(() => S.issueStatement(state, 'a1', 'green', period.from), /이미 발행/);
+  assert.equal(S.receivables(state, 'green').issued, before.points);
+  assert.throws(() => S.updatePartner(state, 'a1', 'green', { ...state.partners[0], settleCycle: 'monthly' }), /정산 주기를 바꿀 수 없습니다/);
+  // 웹하드 확인·이의
+  assert.throws(() => S.ackStatement(state, 'p2', st.id), /찾을 수 없/, '다른 웹하드는 볼 수 없다');
+  assert.throws(() => S.disputeStatement(state, 'p1', st.id, ''), /이의 내용/);
+  S.disputeStatement(state, 'p1', st.id, '자사 집계와 1건 차이');
+  assert.equal(st.dispute.message, '자사 집계와 1건 차이');
+  S.ackStatement(state, 'p1', st.id);
+  assert.ok(st.ack && !st.dispute, '확인하면 이의가 정리된다');
+  // 발행 후 회수되면 변동 표시 → 취소 후 재발행
+  S.reverseExchange(state, 'a1', row.id, '테스트 회수');
+  const changed = S.statementPeriods(state, 'green').find(p => p.from === period.from);
+  assert.equal(changed.changed, true);
+  assert.throws(() => S.cancelStatement(state, 'a1', st.id, ''), /사유/);
+  S.cancelStatement(state, 'a1', st.id, '회수 반영');
+  const again = before.count > 1 ? S.issueStatement(state, 'a1', 'green', period.from) : null;
+  if (again) {
+    assert.equal(again.points, before.points - row.points);
+    assert.notEqual(again.id, st.id, '재발행은 새 번호');
+    assert.throws(() => S.markStatementPaid(state, 'a1', again.id, { amount: again.points - 100 }), /메모/);
+    S.markStatementPaid(state, 'a1', again.id, { amount: again.points - 100, memo: '송금 수수료' });
+    assert.deepEqual([again.status, again.paidAmount], ['paid', again.points - 100]);
+    assert.throws(() => S.cancelStatement(state, 'a1', again.id, '사유'), /입금 전/);
+    assert.equal(S.receivables(state, 'green').paidThisMonth, again.points - 100);
+  }
+  assert.throws(() => S.updatePartner(state, 'a1', 'green', { ...state.partners[0], settleDue: 99 }), /0~60일/);
+  // 회원·웹하드 화면 데이터: 웹하드는 자사 정산서만, 회원은 없음
+  const partnerView = S.snapshot(state, S.account(state, 'p2'));
+  assert.ok(partnerView.statements.every(item => item.partner === 'cloud'));
+  assert.deepEqual(S.snapshot(state, S.account(state, 'u1')).statements, []);
+});
+
+test('회원 메모(운영진 전용)·확정 요청 재전송·일괄 승인', () => {
+  const state = fresh();
+  assert.throws(() => S.addMemo(state, 'a1', 'u1', '  '), /메모 내용/);
+  assert.throws(() => S.addMemo(state, 'p1', 'u1', '메모'), /권한/);
+  assert.throws(() => S.addMemo(state, 'a1', 'p1', '메모'), /회원을 찾을 수 없/);
+  const memo = S.addMemo(state, 'a1', 'u1', '출금 지연 문의 응대 완료');
+  assert.equal(S.snapshot(state, S.account(state, 'a1')).memos[0].text, '출금 지연 문의 응대 완료');
+  assert.deepEqual(S.snapshot(state, S.account(state, 'u1')).memos, [], '회원 본인에게는 보이지 않는다');
+  assert.deepEqual(S.snapshot(state, S.account(state, 'p1')).memos, []);
+  S.deleteMemo(state, 'a1', memo.id);
+  assert.equal(state.memos.length, 0);
+  // 재전송·일괄 승인
+  S.transferIn(state, 'green', { transferId: 'G-B1', member: 'smile_green', source: 2000, points: 1000 });
+  const a = S.requestConfirm(state, 'u1', 'green', 1000);
+  const b = S.requestConfirm(state, 'u1', 'green', 4000);
+  const hooks = state.webhooks.length;
+  S.resendConfirm(state, 'a1', a.id);
+  assert.equal(state.webhooks.length, hooks + 1);
+  assert.equal(state.webhooks[0].data.resend, 1);
+  assert.equal(a.resent, 1);
+  assert.throws(() => S.resendConfirm(state, 'p2', a.id), /찾을 수 없/);
+  assert.throws(() => S.approveConfirms(state, 'p1', []), /선택/);
+  assert.equal(S.approveConfirms(state, 'p1', [a.id, b.id, a.id]).done, 2);
+  assert.equal(S.balances(state, 'u1').confirming, 0);
+  assert.throws(() => S.resendConfirm(state, 'a1', a.id), /승인 대기 중인/);
+});

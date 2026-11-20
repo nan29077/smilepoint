@@ -65,13 +65,13 @@ function convertGuide() {
   return `<section class="panel"><div class="panel-head"><h2>포인트는 이렇게 넘어와요</h2></div><ol class="convert-steps">${steps.map(([glyph, title, copy], i) => `<li><span class="feature-icon tone-${i}">${icon(glyph, 20)}</span><div><strong>${i + 1}. ${title}</strong><small>${copy}</small></div></li>`).join('')}</ol></section>`;
 }
 const confirmLabel = { pending: ['승인 대기', 'processing'], approved: ['확정 완료', 'complete'], rejected: ['승인 거절', 'rejected'] };
-export function confirmationTable(state, list, { showUser = false, actions = false } = {}) {
+export function confirmationTable(state, list, { showUser = false, actions = false, resend = false } = {}) {
   if (!list.length) return blank('확정 요청 내역이 없습니다.', 'check');
   return `<div class="table-scroll"><table><thead><tr><th>요청</th>${showUser ? '<th>회원</th>' : ''}<th>웹하드</th><th>요청 일시</th><th class="numeric">확정 포인트</th><th>상태</th><th>처리 일시</th>${actions ? '<th><span class="sr-only">처리</span></th>' : ''}</tr></thead><tbody>${list.map(item => {
     const [label, tone] = confirmLabel[item.status] ?? [item.status, 'plain'];
     const owner = state.accounts.find(a => a.id === item.userId);
-    return `<tr><td><strong>${escape(item.id)}</strong><small>${escape(item.member ?? '')}${item.reason ? ' · ' + escape(item.reason) : ''}</small></td>${showUser ? `<td>${escape(owner?.name ?? '—')}</td>` : ''}<td>${escape(state.partners.find(p => p.id === item.partner)?.name ?? item.partner)}</td><td>${showTime(item.date)}</td><td class="numeric">${format(item.points)} P</td><td>${pill(label, tone)}</td><td>${item.updated ? showTime(item.updated) : '—'}</td>
-      ${actions ? `<td>${item.status === 'pending' ? `<span class="row-actions">${action('승인', 'confirm-approve', `data-id="${escape(item.id)}"`, 'btn primary sm')}${action('거절', 'confirm-reject', `data-id="${escape(item.id)}"`, 'btn outline sm')}</span>` : ''}</td>` : ''}</tr>`;
+    return `<tr><td><strong>${escape(item.id)}</strong><small>${escape(item.member ?? '')}${item.reason ? ' · ' + escape(item.reason) : ''}${item.resent ? ` · 재전송 ${item.resent}회` : ''}</small></td>${showUser ? `<td>${escape(owner?.name ?? '—')}</td>` : ''}<td>${escape(state.partners.find(p => p.id === item.partner)?.name ?? item.partner)}</td><td>${showTime(item.date)}</td><td class="numeric">${format(item.points)} P</td><td>${pill(label, tone)}</td><td>${item.updated ? showTime(item.updated) : '—'}</td>
+      ${actions ? `<td>${item.status === 'pending' ? `<span class="row-actions">${action('승인', 'confirm-approve', `data-id="${escape(item.id)}"`, 'btn primary sm')}${action('거절', 'confirm-reject', `data-id="${escape(item.id)}"`, 'btn outline sm')}${resend ? action('재전송', 'confirm-resend', `data-id="${escape(item.id)}"`, 'text-btn') : ''}</span>` : ''}</td>` : ''}</tr>`;
   }).join('')}</tbody></table></div>`;
 }
 

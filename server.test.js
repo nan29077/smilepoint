@@ -123,6 +123,10 @@ test('웹하드 전환 API: 미확정 적립 → 회원 확정(일부) → 사�
   assert.equal(canceled.status, 200);
   assert.equal(S.balances(db(), 'u1').unconfirmed, b2.unconfirmed - view.data.unconfirmed);
   assert.equal((await post('/api/v1/transfers/GF-1001/cancel', {})).status, 409);
+  // 정산서 조회: 자사 정산서만
+  const statements = await get('/api/v1/statements', other);
+  assert.ok(statements.data.every(item => item.id.startsWith('ST-cloud-')));
+  assert.equal(statements.data.length, db().statements.filter(item => item.partner === 'cloud' && item.status !== 'canceled').length);
 });
 
 test('데모: 자동 승인 웹하드 · 카드 충전 포인트는 쿠폰 전용(출금·선물 불가)', async () => {
