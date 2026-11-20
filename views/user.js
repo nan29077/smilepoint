@@ -1,14 +1,15 @@
 import { animals, banks, escape, faqFor, format, grades, icon, providers, ticketCategories } from '../catalog.js';
-import { activeEvents, balances, feeFor, grade, kstDay, notificationsFor, partnerAvailable, series, streak, types, visibleTransactions, withdrawnToday } from '../state.js';
+import { activeEvents, balances, chargedToday, chargeMethods, confirmingFor, direction, feePercent, feeRateFor, grade, kstDay, notificationsFor, partnerAvailable, percent, series, streak, types, unconfirmedFor, visibleTransactions, withdrawnToday } from '../state.js';
 import { action, animalIndex, announcementList, avatar, barChart, barcode, blank, button, donut, exchangeFlow, faqList, maskAccount, metric, money, panel, pill, productCard, productCards, productName, progress, providerName, showDate, showTime, table, transactionLabel, trend, withdrawalFlow } from './ui.js';
 
 export const userMenu = [
-  ['개인', [['overview', 'home', '내 지갑'], ['exchange', 'exchange', '포인트 교환'], ['withdrawal', 'bank', '계좌 출금'], ['shop', 'shop', '포인트 쇼핑'], ['coupons', 'ticket', '쿠폰함']]],
+  ['개인', [['overview', 'home', '내 지갑'], ['exchange', 'exchange', '포인트 교환·확정'], ['withdrawal', 'bank', '계좌 출금'], ['charge', 'card', '포인트 충전'], ['shop', 'shop', '포인트 쇼핑'], ['coupons', 'ticket', '쿠폰함']]],
   ['혜택', [['attendance', 'calendar', '출석체크'], ['gift', 'send', '포인트 선물'], ['benefits', 'trophy', '등급·이벤트']]],
   ['내 정보', [['activity', 'file', '거래 내역'], ['alerts', 'bell', '알림'], ['support', 'help', '고객센터']]],
 ];
 export const userDescriptions = {
-  exchange: '웹하드 계정을 연결하고 포인트를 스마일 포인트로 교환하세요.',
+  exchange: '웹하드에서 넘어온 포인트를 확정해 사용 가능 포인트로 바꾸세요. 웹하드 계정 연결도 여기서 관리합니다.',
+  charge: '신용카드 등으로 포인트를 충전해 쿠폰·상품권 구매에 사용하세요. 충전한 포인트는 현금으로 출금할 수 없습니다.',
   withdrawal: '본인 명의 계좌로 포인트를 출금하세요. 신청부터 입금까지 진행 상황을 바로 확인할 수 있습니다.',
   benefits: '회원 등급별 혜택과 진행 중인 이벤트, 포인트를 모으는 방법을 확인하세요.',
   alerts: '교환 승인, 출금 입금, 문의 답변 등 내 계정의 알림을 모아 보세요.',
@@ -21,27 +22,57 @@ export const userDescriptions = {
   profile: '프로필 사진, 연락처와 알림 설정을 관리하세요.',
 };
 
-const unlinkedNote = '<p class="muted small">웹하드 아이디를 입력하면 해당 웹하드로 인증번호가 전송됩니다. 웹하드에서 받은 번호를 입력해야 연결이 완료되고 교환 가능 포인트를 불러옵니다.</p>';
+const unlinkedNote = '<p class="muted small">웹하드 아이디를 입력하면 해당 웹하드로 인증번호가 전송됩니다. 웹하드에서 받은 번호를 입력해야 연결이 완료되고, 연결된 계정으로만 웹하드 포인트를 넘겨받을 수 있습니다.</p>';
+const demoMode = state => state.server?.demo !== false;
 
 function partnerExchangeCards(state, me) {
+  const demo = demoMode(state);
   return `<div class="card-grid partner-grid four">${state.partners.map(item => {
     const link = me.links[item.id];
     const verified = !!link?.verified;
     const waiting = link && !verified;
+    const push = item.flow !== 'pull';
     const available = partnerAvailable(state, me.id, item.id);
-    const status = verified ? pill('연결됨', 'complete') : waiting ? pill('인증 대기', 'pending') : pill(item.active ? '미연결' : '일시 중지');
+    const held = unconfirmedFor(state, me.id, item.id);
+    const confirming = confirmingFor(state, me.id, item.id);
+    const status = verified ? (held ? pill('미확정 ' + format(held) + ' P', 'pending') : pill('연결됨', 'complete')) : waiting ? pill('인증 대기', 'pending') : pill(item.active ? '미연결' : '일시 중지');
+    const confirmBtn = held ? action('포인트 확정', 'confirm', `data-id="${item.id}"`, 'btn primary sm', 'check') : '';
     const actions = !item.active ? '<span class="muted small">점검 중입니다</span>'
-      : verified ? action('교환하기', 'exchange', `data-id="${item.id}" ${available !== null && available < item.min ? 'disabled' : ''}`, 'btn primary sm', 'exchange') + action('연결 해제', 'unlink', `data-id="${item.id}"`, 'text-btn')
+      : verified ? (push
+        ? confirmBtn + (demo ? action('전환 신청(데모)', 'simulate', `data-id="${item.id}" ${available !== null && available < item.min ? 'disabled' : ''}`, held ? 'btn outline sm' : 'btn primary sm', 'exchange') : '') + action('연결 해제', 'unlink', `data-id="${item.id}"`, 'text-btn')
+        : action('교환하기', 'exchange', `data-id="${item.id}" ${available !== null && available < item.min ? 'disabled' : ''}`, 'btn primary sm', 'exchange') + action('연결 해제', 'unlink', `data-id="${item.id}"`, 'text-btn'))
       : waiting ? action('인증번호 입력', 'link-verify', `data-id="${item.id}"`, 'btn primary sm', 'key') + action('취소', 'unlink-confirm', `data-id="${item.id}"`, 'text-btn')
       : action('계정 연결', 'link', `data-id="${item.id}"`, 'btn outline sm', 'link');
+    const facts = push
+      ? `<div><dt>미확정</dt><dd>${verified ? format(held) + ' P' : '—'}</dd></div><div><dt>승인 대기</dt><dd>${verified ? format(confirming) + ' P' : '—'}</dd></div><div><dt>전환 수수료</dt><dd>${feePercent(item)}%</dd></div>${demo && verified && available !== null ? `<div><dt>웹하드 보유(데모)</dt><dd>${format(available)} P</dd></div>` : ''}`
+      : `<div><dt>교환 가능</dt><dd>${!verified ? (waiting ? '인증 후 확인' : '—') : available === null ? '승인 시 확인' : format(available) + ' P'}</dd></div><div><dt>최소 신청</dt><dd>${format(item.min)} P</dd></div><div><dt>승인 시간</dt><dd>${escape(item.approval)}</dd></div>`;
     return `<article class="partner-card ${verified ? 'linked' : ''} ${item.active ? '' : 'inactive'}">
       <div class="partner-top"><span class="partner-logo ${item.color}">${escape(item.initials)}</span>${status}</div>
       <h3>${escape(item.name)}</h3><p class="partner-rate"><strong>${item.divisor} P</strong>${icon('arrow', 16)}<strong>1 스마일 P</strong></p>
-      <dl class="mini-dl"><div><dt>교환 가능</dt><dd>${!verified ? (waiting ? '인증 후 확인' : '—') : available === null ? '승인 시 확인' : format(available) + ' P'}</dd></div><div><dt>최소 신청</dt><dd>${format(item.min)} P</dd></div><div><dt>승인 시간</dt><dd>${escape(item.approval)}</dd></div></dl>
-      ${waiting ? `<p class="muted small">${escape(link.loginId)} · ${escape(item.name)}에서 받은 인증번호를 입력하세요.</p>` : ''}
+      <dl class="mini-dl">${facts}</dl>
+      ${waiting ? `<p class="muted small">${escape(link.loginId)} · ${escape(item.name)}에서 받은 인증번호를 입력하세요.</p>` : verified && push && !held && !confirming ? `<p class="muted small">${escape(item.name)} 사이트에서 스마일 포인트로 전환을 신청하면 여기에 미확정 포인트로 들어와요.</p>` : ''}
       <div class="partner-actions">${actions}</div>
     </article>`;
   }).join('')}</div>`;
+}
+
+// 웹하드 전환 → 확정 → 승인 흐름 안내
+function convertGuide() {
+  const steps = [['exchange', '웹하드에서 전환 신청', '이용 중인 웹하드에서 스마일 포인트로 전환을 신청하세요. 웹하드 수수료를 뺀 포인트가 넘어옵니다.'],
+    ['clock', '미확정 포인트 적립', '넘어온 포인트는 미확정 상태로 보관돼요. 아직 출금·구매에는 쓸 수 없어요.'],
+    ['check', '포인트 확정', '[포인트 확정]을 누르면(전액 또는 일부) 웹하드에 사용 승인을 요청합니다.'],
+    ['wallet', '사용 가능', '웹하드가 승인하면 바로 사용 가능 포인트가 되어 출금·쿠폰·상품권 구매에 쓸 수 있어요.']];
+  return `<section class="panel"><div class="panel-head"><h2>포인트는 이렇게 넘어와요</h2></div><ol class="convert-steps">${steps.map(([glyph, title, copy], i) => `<li><span class="feature-icon tone-${i}">${icon(glyph, 20)}</span><div><strong>${i + 1}. ${title}</strong><small>${copy}</small></div></li>`).join('')}</ol></section>`;
+}
+const confirmLabel = { pending: ['승인 대기', 'processing'], approved: ['확정 완료', 'complete'], rejected: ['승인 거절', 'rejected'] };
+export function confirmationTable(state, list, { showUser = false, actions = false } = {}) {
+  if (!list.length) return blank('확정 요청 내역이 없습니다.', 'check');
+  return `<div class="table-scroll"><table><thead><tr><th>요청</th>${showUser ? '<th>회원</th>' : ''}<th>웹하드</th><th>요청 일시</th><th class="numeric">확정 포인트</th><th>상태</th><th>처리 일시</th>${actions ? '<th><span class="sr-only">처리</span></th>' : ''}</tr></thead><tbody>${list.map(item => {
+    const [label, tone] = confirmLabel[item.status] ?? [item.status, 'plain'];
+    const owner = state.accounts.find(a => a.id === item.userId);
+    return `<tr><td><strong>${escape(item.id)}</strong><small>${escape(item.member ?? '')}${item.reason ? ' · ' + escape(item.reason) : ''}</small></td>${showUser ? `<td>${escape(owner?.name ?? '—')}</td>` : ''}<td>${escape(state.partners.find(p => p.id === item.partner)?.name ?? item.partner)}</td><td>${showTime(item.date)}</td><td class="numeric">${format(item.points)} P</td><td>${pill(label, tone)}</td><td>${item.updated ? showTime(item.updated) : '—'}</td>
+      ${actions ? `<td>${item.status === 'pending' ? `<span class="row-actions">${action('승인', 'confirm-approve', `data-id="${escape(item.id)}"`, 'btn primary sm')}${action('거절', 'confirm-reject', `data-id="${escape(item.id)}"`, 'btn outline sm')}</span>` : ''}</td>` : ''}</tr>`;
+  }).join('')}</tbody></table></div>`;
 }
 
 function overview(state, me) {
@@ -64,11 +95,12 @@ function overview(state, me) {
       <span class="eyebrow">${level.name} 회원 · 내 지갑</span>
       <h1>${escape(me.name)}님, 안녕하세요.</h1>
       <div class="banner-balance"><span>사용 가능 포인트</span><strong>${money(bal.available)}</strong></div>
-      <div class="banner-actions">${button('출금하기', '#app/user/withdrawal', 'btn lime sm', 'bank')}${button('쇼핑하기', '#app/user/shop', 'btn ghost sm', 'shop')}${button('교환하기', '#app/user/exchange', 'btn ghost sm', 'exchange')}</div>
+      <div class="banner-actions">${button('출금하기', '#app/user/withdrawal', 'btn lime sm', 'bank')}${button('쇼핑하기', '#app/user/shop', 'btn ghost sm', 'shop')}${button('포인트 확정', '#app/user/exchange', 'btn ghost sm', 'check')}${button('충전하기', '#app/user/charge', 'btn ghost sm', 'card')}</div>
     </div>${avatar(me, 'banner-avatar')}</section>
+    ${bal.unconfirmed ? `<div class="notice-bar warn">${icon('clock', 18)}<span><b>미확정 포인트 ${format(bal.unconfirmed)} P</b> 웹하드에서 넘어온 포인트예요. 확정해야 출금·쇼핑에 사용할 수 있습니다.</span>${button('포인트 확정하기', '#app/user/exchange', 'btn primary sm', 'check')}</div>` : ''}
     <div class="card-grid metrics four">
-      ${metric('사용 가능', money(bal.available), 'wallet', '출금·쇼핑·선물에 사용', 0)}
-      ${metric('적립 예정', money(bal.pending), 'clock', '제휴사 승인 후 적립', 1)}
+      ${metric('사용 가능', money(bal.available), 'wallet', bal.charged ? `출금 가능 ${format(bal.withdrawable)} P · 충전 ${format(bal.charged)} P` : '출금·쇼핑·선물에 사용', 0)}
+      ${metric('미확정', money(bal.unconfirmed + bal.confirming), 'clock', bal.confirming ? `웹하드 승인 대기 ${format(bal.confirming)} P` : '확정하면 사용 가능', 1)}
       ${metric('처리 중', money(bal.reserved), 'bank', '진행 중인 출금 신청', 2)}
       ${metric('이번 달 적립', money(monthIn), 'star', '교환·출석·이벤트 합계', 3, trend(thisWeek, prevWeek))}
     </div>
@@ -80,7 +112,7 @@ function overview(state, me) {
       </section>
       <section class="panel grade-card"><div class="panel-head"><h2>회원 등급</h2><span class="grade-badge" style="--c:${level.color}">${icon('trophy', 15)} ${level.name}</span></div>
         <p class="grade-line"><strong>${format(level.exchanged)} P</strong> 누적 교환</p>${progress(level.progress, '다음 등급까지 진행률')}
-        <p class="muted small">${level.next ? `${level.next.name}까지 ${format(level.next.min - level.exchanged)} P 남았어요.` : '최고 등급입니다!'} 현재 출금 수수료 <b>${format(feeFor(state, me.id))} P</b></p>
+        <p class="muted small">${level.next ? `${level.next.name}까지 ${format(level.next.min - level.exchanged)} P 남았어요.` : '최고 등급입니다!'} 현재 출금 수수료 <b>${percent(feeRateFor(state, me.id))}</b></p>
         <div class="grade-steps">${grades.map(g => `<span class="${g.id === level.id ? 'on' : ''}">${g.name}</span>`).join('')}</div>
       </section>
       <section class="panel invite-card"><div class="panel-head"><h2>친구 초대</h2>${icon('users', 20)}</div>
@@ -95,7 +127,7 @@ function overview(state, me) {
     </div>
     <div class="dash-grid two-one">
       ${panel('최근 거래', table(state, rows.slice(0, 6), me), button('전체 내역', '#app/user/activity', 'text-btn', 'chevron'))}
-      ${panel('연결된 웹하드', linked.length ? `<ul class="link-list">${linked.map(item => `<li><span class="partner-logo ${item.color} sm">${escape(item.initials)}</span><div><strong>${escape(item.name)}</strong><small>${escape(me.links[item.id].loginId)}</small></div><b>${partnerAvailable(state, me.id, item.id) === null ? '승인 시 확인' : format(partnerAvailable(state, me.id, item.id)) + ' P'}</b></li>`).join('')}</ul>` : blank('연결된 웹하드가 없습니다.', 'link'), button('관리', '#app/user/exchange', 'text-btn', 'chevron'))}
+      ${panel('연결된 웹하드', linked.length ? `<ul class="link-list">${linked.map(item => `<li><span class="partner-logo ${item.color} sm">${escape(item.initials)}</span><div><strong>${escape(item.name)}</strong><small>${escape(me.links[item.id].loginId)}</small></div><b>${item.flow !== 'pull' ? (unconfirmedFor(state, me.id, item.id) ? '미확정 ' + format(unconfirmedFor(state, me.id, item.id)) + ' P' : '연결됨') : partnerAvailable(state, me.id, item.id) === null ? '승인 시 확인' : format(partnerAvailable(state, me.id, item.id)) + ' P'}</b></li>`).join('')}</ul>` : blank('연결된 웹하드가 없습니다.', 'link'), button('관리', '#app/user/exchange', 'text-btn', 'chevron'))}
     </div>
     ${picks.length ? panel(affordable.length ? '지금 바꿀 수 있는 쿠폰' : '조금만 더 모으면 받을 수 있어요', `<div class="card-grid product-grid">${picks.map(productCard).join('')}</div>`, button('쇼핑 전체 보기', '#app/user/shop', 'text-btn', 'chevron')) : ''}
     ${panel('공지사항', announcementList(state.announcements.slice(0, 3)))}`;
@@ -108,23 +140,31 @@ function trackCard(state, row) {
 }
 
 function exchangePage(state, me) {
-  const pending = visibleTransactions(state, me).filter(row => row.type === 'exchange');
+  const rows = visibleTransactions(state, me).filter(row => row.type === 'exchange');
+  const bal = balances(state, me.id);
   const events = activeEvents(state);
-  return `${events.map(event => `<div class="notice-bar">${icon('megaphone', 18)}<span><b>이벤트</b> ${escape(event.title)} · ${escape(state.partners.find(p => p.id === event.partner)?.name ?? '')} ${event.firstOnly ? '첫 교환' : '교환'}이 승인되면 자동으로 추가 적립돼요${event.until ? ` (${Number(event.until.slice(5, 7))}.${Number(event.until.slice(8))}까지)` : ''}</span></div>`).join('')}
+  const mine = (state.confirmations ?? []).filter(item => item.userId === me.id);
+  return `${events.map(event => `<div class="notice-bar">${icon('megaphone', 18)}<span><b>이벤트</b> ${escape(event.title)} · ${escape(state.partners.find(p => p.id === event.partner)?.name ?? '')} ${event.firstOnly ? '첫 확정' : '포인트 확정'}이 승인되면 자동으로 추가 적립돼요${event.until ? ` (${Number(event.until.slice(5, 7))}.${Number(event.until.slice(8))}까지)` : ''}</span></div>`).join('')}
+    <div class="summary-strip"><div><span>미확정 포인트</span><strong class="${bal.unconfirmed ? 'minus' : ''}">${format(bal.unconfirmed)} P</strong></div><div><span>웹하드 승인 대기</span><strong>${format(bal.confirming)} P</strong></div><div><span>사용 가능</span><strong>${format(bal.available)} P</strong></div>
+      <div class="strip-action">${bal.unconfirmed ? action('미확정 전액 확정', 'confirm-all', '', 'btn primary sm', 'check') : '<small class="muted">확정할 포인트가 없어요</small>'}</div></div>
     ${partnerExchangeCards(state, me)}
     ${unlinkedNote}
-    ${panel('교환 신청 내역', table(state, pending.slice(0, 10), me, { showUpdate: true }), button('전체 보기', '#app/user/activity', 'text-btn', 'chevron'))}`;
+    <div class="dash-grid two-one">
+      ${panel('확정 요청 내역', confirmationTable(state, mine.slice(0, 10)))}
+      ${convertGuide()}
+    </div>
+    ${panel('넘어온 포인트 내역', table(state, rows.slice(0, 10), me, { showUpdate: true, empty: '아직 넘어온 포인트가 없습니다.' }), button('전체 보기', '#app/user/activity', 'text-btn', 'chevron'))}`;
 }
 
 function withdrawalPage(state, me) {
   const bal = balances(state, me.id);
-  const fee = feeFor(state, me.id);
+  const rate = feeRateFor(state, me.id);
   const level = grade(state, me.id);
   const history = visibleTransactions(state, me).filter(row => row.type === 'withdrawal');
   const limitLeft = Math.max(0, state.settings.dailyWithdrawLimit - withdrawnToday(state, me.id));
   if (me.bankRequest) return `${bankConfirm(state, me)}${panel('출금 내역', table(state, history, me))}`;
   if (!me.bank?.verified) return `${bankForm(me, false)}${panel('출금 내역', table(state, history, me))}`;
-  const max = Math.min(bal.available, limitLeft);
+  const max = Math.min(bal.withdrawable, limitLeft);
   const api = state.settings.payoutMode === 'api';
   const auto = api ? state.settings.payoutAutoLimit : 0;
   const net = row => row.points - (row.fee ?? 0);
@@ -135,18 +175,21 @@ function withdrawalPage(state, me) {
   return `<div class="summary-strip"><div><span>이번 달 출금</span><strong>${paidMonth.length}건 · ${format(paidMonth.reduce((s, r) => s + net(r), 0))}원</strong></div><div><span>진행 중</span><strong>${active.length}건 · ${format(active.reduce((s, r) => s + r.points, 0))} P</strong></div><div><span>누적 실수령</span><strong>${format(paid.reduce((s, r) => s + net(r), 0))}원</strong></div><div><span>지급 방식</span><strong>${api ? '자동 이체' : '영업일 지급'}</strong></div></div>
     ${active.length ? panel('진행 중인 출금', `<div class="track-list">${active.map(row => trackCard(state, row)).join('')}</div>`, pill(active.length + '건', 'pending')) : ''}
     <div class="dash-grid two-one">
-    <section class="panel"><div class="panel-head"><h2>출금 신청</h2>${pill(level.name + ' 수수료 ' + format(fee) + ' P', 'complete')}</div>
+    <section class="panel"><div class="panel-head"><h2>출금 신청</h2>${pill('수수료 ' + percent(rate) + ' (부가세 포함)', 'complete')}</div>
+      ${bal.unconfirmed ? `<div class="notice-bar warn">${icon('clock', 18)}<span>미확정 포인트 <b>${format(bal.unconfirmed)} P</b>는 확정해야 출금할 수 있어요.</span>${button('확정하기', '#app/user/exchange', 'btn outline sm', 'check')}</div>` : ''}
       <form class="stack" data-form="withdrawal"><label for="withdraw-amount">출금할 포인트</label>
-        <div class="amount-field"><input id="withdraw-amount" name="amount" type="number" inputmode="numeric" required min="${state.settings.withdrawalMinimum}" max="${max}" step="1" placeholder="${format(state.settings.withdrawalMinimum)} 이상" data-fee="${fee}"><span>P</span></div>
-        <div class="chips">${[10000, 30000, 50000].map(value => `<button type="button" class="chip" data-action="fill" data-target="withdraw-amount" data-value="${value}" ${value > max ? 'disabled' : ''}>${format(value)}</button>`).join('')}<button type="button" class="chip" data-action="fill" data-target="withdraw-amount" data-value="${max}">전액</button></div>
-        <div class="form-summary"><div><span>사용 가능</span><strong>${money(bal.available)}</strong></div><div><span>오늘 남은 한도</span><strong>${money(limitLeft)}</strong></div><div><span>출금 수수료</span><strong>${money(fee)}</strong></div><div class="total"><span>예상 실수령액</span><strong id="withdraw-net">0원</strong></div></div>
+        <div class="amount-field"><input id="withdraw-amount" name="amount" type="number" inputmode="numeric" required min="${state.settings.withdrawalMinimum}" max="${max}" step="1" placeholder="${format(state.settings.withdrawalMinimum)} 이상" data-rate="${rate}"><span>P</span></div>
+        <div class="chips">${[10000, 30000, 50000].map(value => `<button type="button" class="chip" data-action="fill" data-target="withdraw-amount" data-value="${value}" ${value > max ? 'disabled' : ''}>${format(value)}</button>`).join('')}<button type="button" class="chip" data-action="fill" data-target="withdraw-amount" data-value="${max}" ${max < state.settings.withdrawalMinimum ? 'disabled' : ''}>전액</button></div>
+        <div class="form-summary"><div><span>출금 가능</span><strong>${money(bal.withdrawable)}</strong></div>${bal.charged ? `<div><span>충전 포인트 (출금 불가)</span><strong>${money(bal.charged)}</strong></div>` : ''}<div><span>오늘 남은 한도</span><strong>${money(limitLeft)}</strong></div><div><span>출금 수수료 (${percent(rate)})</span><strong id="withdraw-fee">0 P</strong></div><div class="total"><span>예상 실수령액</span><strong id="withdraw-net">0원</strong></div></div>
         <button type="submit" class="btn primary block" ${max < state.settings.withdrawalMinimum ? 'disabled' : ''}>출금 신청 ${icon('arrow', 17)}</button>
-        <p class="muted small">최소 ${format(state.settings.withdrawalMinimum)} P · ${api ? `${auto ? format(auto) + ' P 이하는 심사 없이, 그 외에는 ' : ''}승인 즉시 지급대행사를 통해 등록 계좌로 자동 이체` : '승인 후 다음 영업일 입금'} · 심사 대기 중에는 취소할 수 있어요.</p>
+        <p class="muted small">최소 ${format(state.settings.withdrawalMinimum)} P · 수수료 ${percent(rate)}(부가세 포함) · 충전 포인트는 출금할 수 없어요 · ${api ? `${auto ? format(auto) + ' P 이하는 심사 없이, 그 외에는 ' : ''}승인 즉시 지급대행사를 통해 등록 계좌로 자동 이체` : '승인 후 다음 영업일 입금'} · 심사 대기 중에는 취소할 수 있어요.</p>
       </form></section>
     <div class="side-stack">
       <section class="panel bank-card"><span class="eyebrow">출금 계좌</span><h2>${escape(me.bank.bank)}</h2><p class="bank-number">${maskAccount(me.bank.number)}</p><p class="muted small">예금주 ${escape(me.bank.holder)} · ${pill('본인 확인 완료', 'complete')}</p>
         ${action('계좌 변경', 'bank-edit', '', 'btn outline sm', 'edit')}</section>
-      <section class="panel"><h2>등급별 수수료</h2><ul class="fee-list">${grades.map(g => `<li class="${g.id === level.id ? 'on' : ''}"><span>${g.name}</span><b>${g.feeRate ? format(Math.round(state.settings.fee * g.feeRate)) + ' P' : '무료'}</b></li>`).join('')}</ul></section>
+      <section class="panel"><h2>출금 수수료</h2>${state.settings.gradeFeeDiscount
+        ? `<ul class="fee-list">${grades.map(g => `<li class="${g.id === level.id ? 'on' : ''}"><span>${g.name}</span><b>${g.feeRate ? percent(state.settings.withdrawFeeRate * g.feeRate) : '무료'}</b></li>`).join('')}</ul>`
+        : `<ul class="fee-list"><li class="on"><span>출금 금액의</span><b>${percent(state.settings.withdrawFeeRate)}</b></li><li><span>부가세</span><b>포함</b></li><li><span>10,000 P 출금 시</span><b>실수령 ${format(10000 - Math.round(10000 * state.settings.withdrawFeeRate / 100))}원</b></li><li><span>최소 출금</span><b>${format(state.settings.withdrawalMinimum)} P</b></li></ul>`}</section>
       <section class="panel"><h2>출금 안내</h2><ul class="guide-list"><li>출금은 <b>본인 명의 계좌</b>로만 가능합니다.</li><li>${api ? '승인되면 지급대행사를 통해 <b>자동으로 이체</b>되고, 입금되면 알림을 보내 드립니다.' : '승인 후 <b>다음 영업일</b>에 입금됩니다.'}</li><li>은행 점검 시간(매일 23:30~00:30)에는 이체가 지연될 수 있습니다.</li><li>하루 최대 <b>${format(state.settings.dailyWithdrawLimit)} P</b>까지 신청할 수 있습니다.</li></ul></section>
     </div></div>
     ${panel('출금 내역', table(state, history, me, { showUpdate: true }))}`;
@@ -173,10 +216,34 @@ export function bankConfirm(state, me) {
     <div class="dialog-actions">${action('다른 계좌로 다시 등록', 'bank-retry', '', 'btn outline sm', 'refresh')}</div></section>`;
 }
 
+function chargePage(state, me) {
+  const s = state.settings;
+  const bal = balances(state, me.id);
+  const history = visibleTransactions(state, me).filter(row => row.type === 'charge');
+  const left = Math.max(0, s.dailyChargeLimit - chargedToday(state, me.id));
+  const ready = s.chargeEnabled && demoMode(state);
+  const notice = !s.chargeEnabled ? '지금은 포인트 충전을 이용할 수 없습니다.' : !demoMode(state) ? '카드 결제(PG) 연동을 준비 중입니다. 연동이 끝나면 바로 충전할 수 있어요.' : '';
+  return `<div class="summary-strip"><div><span>남은 충전 포인트</span><strong>${format(bal.charged)} P</strong></div><div><span>사용 가능 (전체)</span><strong>${format(bal.available)} P</strong></div><div><span>오늘 남은 충전 한도</span><strong>${format(left)} P</strong></div></div>
+    <div class="dash-grid two-one">
+    <section class="panel"><div class="panel-head"><h2>포인트 충전</h2>${pill('1 P = 1원', 'complete')}</div>
+      ${notice ? `<div class="notice-bar warn">${icon('alert', 18)}<span>${notice}</span></div>` : ''}
+      <form class="stack" data-form="charge"><label for="charge-amount">충전할 포인트</label>
+        <div class="amount-field"><input id="charge-amount" name="amount" type="number" inputmode="numeric" required min="${s.chargeMinimum}" max="${Math.min(s.chargeMaximum, left)}" step="100" placeholder="${format(s.chargeMinimum)} 이상"><span>P</span></div>
+        <div class="chips">${[10000, 30000, 50000, 100000].map(value => `<button type="button" class="chip" data-action="fill" data-target="charge-amount" data-value="${value}" ${value > Math.min(s.chargeMaximum, left) || value < s.chargeMinimum ? 'disabled' : ''}>${format(value)}</button>`).join('')}</div>
+        <fieldset class="pay-methods"><legend>결제 수단</legend>${Object.entries(chargeMethods).map(([id, label], i) => `<label class="pay-option"><input type="radio" name="method" value="${id}" ${i === 0 ? 'checked' : ''}><span>${icon(id === 'card' ? 'card' : id === 'easy' ? 'zap' : 'bank', 18)} ${label}</span></label>`).join('')}</fieldset>
+        <div class="form-summary"><div class="total"><span>결제 금액</span><strong id="charge-total">0원</strong></div></div>
+        <button class="btn primary block" type="submit" ${ready ? '' : 'disabled'}>결제하고 충전하기 ${icon('card', 17)}</button>
+        <p class="muted small">1회 ${format(s.chargeMinimum)} ~ ${format(s.chargeMaximum)} P · 하루 ${format(s.dailyChargeLimit)} P까지${demoMode(state) ? ' · 데모에서는 모의 결제로 바로 충전됩니다' : ''}</p></form></section>
+    <section class="panel"><h2>충전 포인트 안내</h2><ul class="guide-list"><li>충전한 포인트는 <b>쿠폰·상품권 구매</b>에 사용할 수 있습니다.</li><li>충전한 포인트는 <b>현금으로 출금하거나 선물할 수 없습니다.</b></li><li>쿠폰·상품권을 살 때는 <b>충전 포인트가 먼저</b> 사용되고, 부족한 만큼 다른 포인트가 사용됩니다.</li><li>사용하지 않은 충전은 고객센터를 통해 결제를 취소할 수 있습니다.</li></ul>
+      ${button('쇼핑하러 가기', '#app/user/shop', 'btn outline sm', 'shop')}</section></div>
+    ${panel('충전 내역', table(state, history, me, { empty: '충전 내역이 없습니다.' }))}`;
+}
+
 function shopPage(state, me) {
   const bal = balances(state, me.id);
   const owned = visibleTransactions(state, me).filter(row => row.type === 'coupon' && !row.coupon?.used).length;
-  return `<div class="shop-bar"><div><span>사용 가능</span><strong>${money(bal.available)}</strong></div><div><span>보유 쿠폰</span><strong>${owned}장</strong></div>${button('쿠폰함', '#app/user/coupons', 'btn outline sm', 'ticket')}</div>
+  return `<div class="shop-bar"><div><span>사용 가능</span><strong>${money(bal.available)}</strong></div>${bal.charged ? `<div><span>충전 포인트</span><strong>${money(bal.charged)}</strong></div>` : ''}<div><span>보유 쿠폰</span><strong>${owned}장</strong></div>${button('충전하기', '#app/user/charge', 'btn outline sm', 'card')}${button('쿠폰함', '#app/user/coupons', 'btn outline sm', 'ticket')}</div>
+    ${bal.unconfirmed ? `<div class="notice-bar warn">${icon('clock', 18)}<span>미확정 포인트 <b>${format(bal.unconfirmed)} P</b>는 확정해야 쇼핑에 사용할 수 있어요.</span>${button('확정하기', '#app/user/exchange', 'btn outline sm', 'check')}</div>` : ''}
     ${productCards(state)}`;
 }
 
@@ -247,7 +314,7 @@ function giftPage(state, me) {
 export function activityFilters(ui, typeList) {
   return `<div class="filters"><label class="search-field">${icon('search', 18)}<span class="sr-only">검색</span><input type="search" data-ui="q" value="${escape(ui.q ?? '')}" placeholder="거래번호, 내용 검색"></label>
     <select data-ui="type" aria-label="유형"><option value="">전체 유형</option>${typeList.map(t => `<option value="${t}" ${ui.type === t ? 'selected' : ''}>${types[t]}</option>`).join('')}</select>
-    <select data-ui="status" aria-label="상태"><option value="">전체 상태</option>${[['pending', '처리 대기'], ['processing', '이체 중'], ['complete', '완료'], ['rejected', '반려'], ['canceled', '취소']].map(([v, l]) => `<option value="${v}" ${ui.status === v ? 'selected' : ''}>${l}</option>`).join('')}</select>
+    <select data-ui="status" aria-label="상태"><option value="">전체 상태</option>${[['held', '미확정'], ['confirming', '승인 대기'], ['pending', '처리 대기'], ['processing', '이체 중'], ['complete', '완료'], ['rejected', '반려'], ['canceled', '취소']].map(([v, l]) => `<option value="${v}" ${ui.status === v ? 'selected' : ''}>${l}</option>`).join('')}</select>
     <select data-ui="period" aria-label="기간">${[['', '전체 기간'], ['7', '최근 7일'], ['30', '최근 30일'], ['90', '최근 90일']].map(([v, l]) => `<option value="${v}" ${(ui.period ?? '') === v ? 'selected' : ''}>${l}</option>`).join('')}</select>
     ${action('CSV', 'csv', 'data-name="거래내역"', 'btn outline sm', 'download')}</div>`;
 }
@@ -260,7 +327,7 @@ export function applyFilters(state, rows, ui) {
 
 function activityPage(state, me, ui) {
   const rows = applyFilters(state, visibleTransactions(state, me), ui);
-  const sum = dir => rows.filter(row => row.status === 'complete' && (dir === 'in' ? ['exchange', 'attendance', 'reward', 'gift_in'].includes(row.type) || (row.type === 'adjust' && row.points > 0) : !['exchange', 'attendance', 'reward', 'gift_in'].includes(row.type) && !(row.type === 'adjust' && row.points > 0))).reduce((s, r) => s + Math.abs(r.points), 0);
+  const sum = dir => rows.filter(row => row.status === 'complete' && direction(row) === dir).reduce((s, r) => s + Math.abs(r.points), 0);
   return `${activityFilters(ui, Object.keys(types))}
     <div class="summary-strip"><div><span>조회 건수</span><strong>${rows.length}건</strong></div><div><span>적립 합계</span><strong class="plus">+${format(sum('in'))} P</strong></div><div><span>사용 합계</span><strong class="minus">−${format(sum('out'))} P</strong></div></div>
     <section class="panel" data-csv>${table(state, rows, me, { showUpdate: true })}</section>`;
@@ -344,8 +411,8 @@ function benefitsPage(state, me) {
   const s = state.settings;
   return `<section class="panel grade-hero"><div class="panel-head"><h2>내 등급</h2><span class="grade-badge" style="--c:${level.color}">${icon('trophy', 15)} ${level.name}</span></div>
       <p class="grade-line"><strong>${format(level.exchanged)} P</strong> 누적 교환</p>${progress(level.progress, '다음 등급까지 진행률')}
-      <p class="muted small">${level.next ? `<b>${level.next.name}</b>까지 ${format(level.next.min - level.exchanged)} P 남았어요. 교환이 승인될 때마다 누적됩니다.` : '최고 등급입니다. 출금 수수료가 무료예요!'}</p>
-      <div class="table-scroll"><table><thead><tr><th>등급</th><th class="numeric">누적 교환 기준</th><th class="numeric">출금 수수료</th><th>상태</th></tr></thead><tbody>${grades.map(g => `<tr class="${g.id === level.id ? 'row-on' : ''}"><td><span class="grade-badge" style="--c:${g.color}">${g.name}</span></td><td class="numeric">${format(g.min)} P 이상</td><td class="numeric">${g.feeRate ? format(Math.round(s.fee * g.feeRate)) + ' P' : '무료'}</td><td>${g.id === level.id ? pill('현재 등급', 'complete') : g.min > level.exchanged ? `<small class="muted">${format(g.min - level.exchanged)} P 남음</small>` : pill('달성')}</td></tr>`).join('')}</tbody></table></div></section>
+      <p class="muted small">${level.next ? `<b>${level.next.name}</b>까지 ${format(level.next.min - level.exchanged)} P 남았어요. 교환이 승인될 때마다 누적됩니다.` : (s.gradeFeeDiscount ? '최고 등급입니다. 출금 수수료가 무료예요!' : '최고 등급입니다!')}</p>
+      <div class="table-scroll"><table><thead><tr><th>등급</th><th class="numeric">누적 교환 기준</th><th class="numeric">출금 수수료</th><th>상태</th></tr></thead><tbody>${grades.map(g => `<tr class="${g.id === level.id ? 'row-on' : ''}"><td><span class="grade-badge" style="--c:${g.color}">${g.name}</span></td><td class="numeric">${format(g.min)} P 이상</td><td class="numeric">${s.gradeFeeDiscount ? (g.feeRate ? percent(s.withdrawFeeRate * g.feeRate) : '무료') : percent(s.withdrawFeeRate)}</td><td>${g.id === level.id ? pill('현재 등급', 'complete') : g.min > level.exchanged ? `<small class="muted">${format(g.min - level.exchanged)} P 남음</small>` : pill('달성')}</td></tr>`).join('')}</tbody></table></div></section>
     ${panel('진행 중인 이벤트', events.length ? `<div class="card-grid event-grid">${events.map(event => `<article class="event-card"><span class="feature-icon tone-3">${icon('megaphone', 22)}</span><div><h3>${escape(event.title)}</h3><p class="muted small">${escape(state.partners.find(p => p.id === event.partner)?.name ?? '')} · ${event.firstOnly ? '첫 교환' : '모든 교환'} ${event.rate}% 추가 적립${event.until ? ` · ~${event.until.slice(5).replace('-', '.')}` : ''}</p></div>${button('교환하러 가기', '#app/user/exchange', 'btn outline sm', 'arrow')}</article>`).join('')}</div>` : blank('진행 중인 이벤트가 없습니다. 새 이벤트가 열리면 알림으로 알려 드릴게요.', 'megaphone'))}
     <div class="dash-grid two-one">
       <section class="panel"><h2>포인트 모으는 방법</h2><ul class="integration-list">
@@ -371,6 +438,7 @@ export function userPage(state, me, page, ui) {
     case 'exchange': return exchangePage(state, me);
     case 'withdrawal': return ui.bankEdit ? bankForm(me, true) : withdrawalPage(state, me);
     case 'shop': return shopPage(state, me);
+    case 'charge': return chargePage(state, me);
     case 'coupons': return couponsPage(state, me, ui);
     case 'attendance': return attendancePage(state, me);
     case 'gift': return giftPage(state, me);

@@ -953,3 +953,26 @@ tr.row-on td { background: #f1f8ee; }
   .event-card { flex-wrap: wrap; }
   .profile-character { flex-wrap: wrap; }
 }
+
+/* ───────── 웹하드 포인트 전환·확정 · 포인트 충전 ───────── */
+.notice-bar > span { flex: 1; min-width: 0; }
+.notice-bar > .btn { flex: none; }
+.summary-strip .strip-action { display: flex; align-items: center; justify-content: flex-end; }
+.convert-steps { list-style: none; margin: 0; padding: 0; display: grid; gap: 13px; }
+.convert-steps li { display: grid; grid-template-columns: 42px minmax(0, 1fr); gap: 11px; align-items: start; }
+.convert-steps .feature-icon { width: 42px; height: 42px; }
+.convert-steps strong { display: block; font-size: 14px; }
+.convert-steps small { display: block; margin-top: 3px; color: var(--muted); font-size: 12.5px; line-height: 1.5; }
+.row-actions { display: inline-flex; gap: 6px; flex-wrap: nowrap; }
+.pay-methods { border: 0; padding: 0; margin: 0; display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 8px; }
+.pay-methods legend { font-size: 13px; font-weight: 700; margin-bottom: 7px; padding: 0; }
+.pay-option { position: relative; display: block; cursor: pointer; }
+.pay-option input { position: absolute; opacity: 0; inset: 0; }
+.pay-option span { display: flex; align-items: center; gap: 7px; justify-content: center; padding: 11px 10px; border: 1px solid var(--line); border-radius: 12px; font-size: 13.5px; font-weight: 700; background: #fff; }
+.pay-option input:checked + span { border-color: #18563e; background: #eef6ef; color: #18563e; box-shadow: 0 0 0 1px #18563e inset; }
+.pay-option input:focus-visible + span { outline: 2px solid #18563e; outline-offset: 2px; }
+.section-label { font-size: 16px; margin: 8px 0 -4px; }
+@media (max-width: 760px) {
+  .summary-strip .strip-action { justify-content: flex-start; }
+  .notice-bar { flex-wrap: wrap; }
+}

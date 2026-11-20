@@ -1,14 +1,14 @@
 import { escape, format, grades, icon } from '../catalog.js';
-import { account, balances, direction, grade, kstDay, monthly, series } from '../state.js';
+import { account, balances, direction, feePercent, grade, kstDay, monthly, series } from '../state.js';
 import { pendingQueue, settlementTable } from './partner.js';
 import { slides } from './site.js';
-import { activityFilters, applyFilters } from './user.js';
+import { activityFilters, applyFilters, confirmationTable } from './user.js';
 import { action, announcementList, avatar, barChart, blank, button, donut, maskAccount, metric, money, moreButton, pageSize, panel, pill, productVisual, providerName, showDate, showTime, table, trend, transactionLabel } from './ui.js';
 
 export const adminMenu = [
   ['대시보드', [['overview', 'home', '운영 개요'], ['report', 'activity', '통계 리포트']]],
   ['회원·제휴', [['members', 'users', '회원 관리'], ['partners', 'layers', '제휴사 관리'], ['staff', 'key', '운영진 계정']]],
-  ['거래 심사', [['requests', 'exchange', '교환 심사'], ['payouts', 'bank', '출금 심사·지급'], ['transactions', 'file', '전체 거래']]],
+  ['거래 심사', [['requests', 'exchange', '교환·확정 심사'], ['payouts', 'bank', '출금 심사·지급'], ['transactions', 'file', '전체 거래']]],
   ['쇼핑', [['products', 'gift', '쿠폰 상품'], ['orders', 'shop', '쿠폰 주문']]],
   ['운영', [['settlement', 'chart', '정산 및 대사'], ['support', 'help', '고객센터'], ['content', 'megaphone', '배너·공지'], ['integrations', 'link', '연동 관리'], ['settings', 'settings', '운영 설정'], ['audit', 'shield', '감사 기록']]],
 ];
@@ -17,7 +17,7 @@ export const adminDescriptions = {
   partners: '제휴 웹하드를 등록하고 교환 비율, 최소 금액과 운영 상태를 관리하세요.',
   staff: '웹하드 관리자·최고 관리자 계정을 만들고 정지하거나 비밀번호를 초기화하세요.',
   integrations: '소셜 로그인, 웹하드 API, 쿠폰 공급사, 계좌 지급 등 외부 연동 상태를 확인하세요.',
-  requests: '모든 제휴사의 교환 신청을 심사하세요.',
+  requests: '회원 포인트 확정 요청(웹하드 사용 승인 대기)을 확인하고, 웹하드 연동 장애 시 대신 처리하세요. 이전 방식의 교환 신청도 심사합니다.',
   report: '월별 가입·교환·출금·쿠폰 판매와 포인트 발행 현황을 확인하세요.',
   payouts: '출금 신청을 심사하고 지급대행 이체 진행 상황과 실패 건을 관리하세요.',
   transactions: '서비스 전체 거래 원장을 조회하세요.',
@@ -51,7 +51,10 @@ function overview(state, me) {
   const lowStock = state.products.filter(p => p.active && p.stock < 30);
   const secondReview = pendingEx.filter(r => r.partnerApproved).length;
   const bankWaiting = state.accounts.filter(a => a.bankRequest).length;
+  const asks = (state.confirmations ?? []).filter(item => item.status === 'pending');
+  const staleAsks = asks.filter(item => Date.now() - new Date(item.date) > 30 * 60000);
   const alerts = [
+    staleAsks.length && ['clock', `30분 넘게 웹하드 승인을 기다리는 포인트 확정 ${staleAsks.length}건 · 웹하드 연동 확인 필요`, '#app/admin/requests', 'rejected'],
     state.server?.mode === 'server' && !me.totp && ['shield', '2단계 인증이 꺼져 있습니다. 내 프로필에서 켜 주세요.', '#app/admin/profile', 'rejected'],
     secondReview && ['exchange', `2차 승인 대기 교환 ${secondReview}건 (고액·한도 초과)`, '#app/admin/requests', 'rejected'],
     pendingEx.length && ['exchange', `교환 심사 대기 ${pendingEx.length}건`, '#app/admin/requests', 'pending'],
@@ -69,7 +72,7 @@ function overview(state, me) {
       ${avatar(me, 'banner-avatar')}</section>
     <div class="card-grid metrics four">
       ${metric('전체 회원', format(users.filter(u => u.status !== 'deleted').length) + '명', 'users', `오늘 가입 ${users.filter(u => kstDay(u.createdAt) === today).length}명 · 정지 ${users.filter(u => u.status === 'suspended').length}명`, 0)}
-      ${metric('교환 심사 대기', pendingEx.length + '건', 'exchange', `${format(pendingEx.reduce((s, r) => s + r.points, 0))} P 적립 예정`, 1)}
+      ${metric('확정 승인 대기', asks.length + '건', 'check', `${format(asks.reduce((s, r) => s + r.points, 0))} P${pendingEx.length ? ` · 교환 심사 ${pendingEx.length}건` : ' · 웹하드 승인 대기'}`, 1)}
       ${metric('출금 심사 대기', pendingOut.length + '건', 'bank', `${format(pendingOut.reduce((s, r) => s + r.points, 0))} P · 이체 중 ${transferring.length}건`, 2)}
       ${metric('7일 교환 적립', format(weekNow) + ' P', 'activity', `오늘 쿠폰 ${couponToday.length}건 판매`, 3, trend(weekNow, weekBefore))}
     </div>
@@ -102,8 +105,8 @@ function members(state, me, ui) {
       <select data-ui="mstatus" aria-label="상태"><option value="">전체 상태</option><option value="active" ${ui.mstatus === 'active' ? 'selected' : ''}>활성</option><option value="suspended" ${ui.mstatus === 'suspended' ? 'selected' : ''}>이용 정지</option><option value="deleted" ${ui.mstatus === 'deleted' ? 'selected' : ''}>탈퇴</option><option value="bank" ${ui.mstatus === 'bank' ? 'selected' : ''}>계좌 인증 대기</option></select>
       <select data-ui="provider" aria-label="가입 경로"><option value="">전체 가입 경로</option>${['email', 'kakao', 'naver', 'google', 'apple'].map(p => `<option value="${p}" ${ui.provider === p ? 'selected' : ''}>${providerName(p)}</option>`).join('')}</select>
       ${action('CSV', 'csv', 'data-name="회원목록"', 'btn outline sm', 'download')}</div>
-    <section class="panel" data-csv>${list.length ? `<div class="table-scroll"><table><thead><tr><th>회원</th><th>가입 경로</th><th>등급</th><th class="numeric">사용 가능</th><th class="numeric">적립 예정</th><th>계좌</th><th>상태</th><th>가입일</th><th><span class="sr-only">관리</span></th></tr></thead>
-      <tbody>${list.slice(0, limit).map(u => { const b = balances(state, u.id); return `<tr><td><div class="cell-user">${avatar(u, 'sm')}<span><strong>${escape(u.name)}</strong><small>${escape(u.email)}</small></span></div></td><td>${pill(providerName(u.provider), 'p-' + u.provider)}</td><td>${grade(state, u.id).name}</td><td class="numeric">${format(b.available)}</td><td class="numeric">${format(b.pending)}</td><td>${u.bankRequest ? pill('인증 대기', 'pending') : u.bank?.verified ? pill('인증', 'complete') : pill('미등록')}</td><td>${memberStatus(u)}</td><td>${showDate(u.createdAt)}</td><td>${action('관리', 'member', `data-id="${u.id}"`, 'text-btn')}</td></tr>`; }).join('')}</tbody></table></div>${moreButton(list.length, Math.min(limit, list.length))}` : blank('조건에 맞는 회원이 없습니다.', 'users')}</section>`;
+    <section class="panel" data-csv>${list.length ? `<div class="table-scroll"><table><thead><tr><th>회원</th><th>가입 경로</th><th>등급</th><th class="numeric">사용 가능</th><th class="numeric">미확정</th><th>계좌</th><th>상태</th><th>가입일</th><th><span class="sr-only">관리</span></th></tr></thead>
+      <tbody>${list.slice(0, limit).map(u => { const b = balances(state, u.id); return `<tr><td><div class="cell-user">${avatar(u, 'sm')}<span><strong>${escape(u.name)}</strong><small>${escape(u.email)}</small></span></div></td><td>${pill(providerName(u.provider), 'p-' + u.provider)}</td><td>${grade(state, u.id).name}</td><td class="numeric">${format(b.available)}</td><td class="numeric">${format(b.unconfirmed + b.confirming)}</td><td>${u.bankRequest ? pill('인증 대기', 'pending') : u.bank?.verified ? pill('인증', 'complete') : pill('미등록')}</td><td>${memberStatus(u)}</td><td>${showDate(u.createdAt)}</td><td>${action('관리', 'member', `data-id="${u.id}"`, 'text-btn')}</td></tr>`; }).join('')}</tbody></table></div>${moreButton(list.length, Math.min(limit, list.length))}` : blank('조건에 맞는 회원이 없습니다.', 'users')}</section>`;
 }
 
 export function memberDetail(state, me, id) {
@@ -114,7 +117,7 @@ export function memberDetail(state, me, id) {
   if (!u) return blank('회원을 찾을 수 없습니다.');
   const deleted = u.status === 'deleted';
   return `<div class="member-head">${avatar(u, 'profile-avatar')}<div><h3>${escape(u.name)} ${memberStatus(u)}</h3><p class="muted small">${escape(u.email)} · ${escape(u.phone || '연락처 없음')} · ${providerName(u.provider)} 가입 · ${g.name}</p></div></div>
-    <div class="summary-strip compact"><div><span>사용 가능</span><strong>${format(b.available)} P</strong></div><div><span>적립 예정</span><strong>${format(b.pending)} P</strong></div><div><span>처리 중</span><strong>${format(b.reserved)} P</strong></div></div>
+    <div class="summary-strip compact"><div><span>사용 가능</span><strong>${format(b.available)} P</strong></div><div><span>출금 가능</span><strong>${format(b.withdrawable)} P</strong></div><div><span>충전 잔액</span><strong>${format(b.charged)} P</strong></div><div><span>미확정 · 승인 대기</span><strong>${format(b.unconfirmed)} · ${format(b.confirming)} P</strong></div><div><span>적립 예정</span><strong>${format(b.pending)} P</strong></div><div><span>처리 중</span><strong>${format(b.reserved)} P</strong></div></div>
     <div class="form-summary"><div><span>출금 계좌</span><strong>${u.bank ? `${escape(u.bank.bank)} ${maskAccount(u.bank.number)}` : '미등록'}</strong></div><div><span>연결 웹하드</span><strong>${Object.entries(u.links ?? {}).map(([k, link]) => escape(state.partners.find(p => p.id === k)?.name ?? k) + (link.verified ? '' : ' (인증 대기)')).join(', ') || '없음'}</strong></div><div><span>추천 코드</span><strong>${escape(u.referral ?? '—')}</strong></div><div><span>가입일</span><strong>${showDate(u.createdAt)}</strong></div>${deleted ? `<div><span>탈퇴일</span><strong>${showDate(u.deletedAt)}</strong></div>` : ''}</div>
     ${u.bankRequest ? `<div class="notice-bar warn">${icon('bank', 18)}<span><b>계좌 인증 대기</b> ${escape(u.bankRequest.bank)} ${escape(u.bankRequest.masked ?? '••••' + String(u.bankRequest.number ?? '').slice(-4))} · ${showTime(u.bankRequest.requestedAt)} 요청 · 예금주 명의를 확인한 뒤 승인하세요.</span>${action('명의 확인 후 승인', 'bank-approve', `data-id="${u.id}"`, 'btn primary sm', 'check')}</div>` : ''}
     <h4>최근 거래</h4>${rows.length ? `<ul class="mini-tx">${rows.slice(0, 6).map(r => `<li><span>${transactionLabel(state, r)}</span><small>${showDate(r.date)}</small><b>${format(Math.abs(r.points))} P</b></li>`).join('')}</ul>` : blank('거래가 없습니다.')}
@@ -133,17 +136,19 @@ function partners(state) {
     const manager = state.accounts.find(a => a.role === 'partner' && a.partnerId === p.id);
     return `<article class="partner-card admin"><div class="partner-top"><span class="partner-logo ${p.color}">${p.initials}</span>${pill(p.active ? '운영 중' : '일시 중지', p.active ? 'complete' : 'rejected')}</div>
       <h3>${escape(p.name)}</h3><p class="muted small">${escape(p.type)} · 담당 ${manager ? escape(manager.name) : '미지정'}</p>
-      <dl class="mini-dl"><div><dt>교환 비율</dt><dd>${p.divisor}:1</dd></div><div><dt>최소</dt><dd>${format(p.min)} P</dd></div><div><dt>대기</dt><dd>${rows.filter(r => r.status === 'pending').length}건</dd></div><div><dt>누적 적립</dt><dd>${format(done.filter(r => !r.reversed).reduce((s, r) => s + r.points, 0))} P</dd></div><div><dt>연결 회원</dt><dd>${state.accounts.filter(a => a.links?.[p.id]?.verified).length}명</dd></div><div><dt>승인 시간</dt><dd>${escape(p.approval)}</dd></div><div><dt>일일 한도</dt><dd>${p.dailyLimit ? format(p.dailyLimit) + ' P' : '없음'}</dd></div><div><dt>2차 승인</dt><dd>${p.reviewOver ? format(p.reviewOver) + ' P 초과' : '없음'}</dd></div></dl>
+      <dl class="mini-dl"><div><dt>연동 방식</dt><dd>${p.flow === 'pull' ? '교환 신청' : '웹하드 전환'}</dd></div><div><dt>전환 수수료</dt><dd>${feePercent(p)}%</dd></div><div><dt>확정 대기</dt><dd>${(state.confirmations ?? []).filter(c => c.partner === p.id && c.status === 'pending').length}건</dd></div><div><dt>교환 비율</dt><dd>${p.divisor}:1</dd></div><div><dt>최소</dt><dd>${format(p.min)} P</dd></div><div><dt>대기</dt><dd>${rows.filter(r => r.status === 'pending').length}건</dd></div><div><dt>누적 적립</dt><dd>${format(done.filter(r => !r.reversed).reduce((s, r) => s + r.points, 0))} P</dd></div><div><dt>연결 회원</dt><dd>${state.accounts.filter(a => a.links?.[p.id]?.verified).length}명</dd></div><div><dt>승인 시간</dt><dd>${escape(p.approval)}</dd></div><div><dt>일일 한도</dt><dd>${p.dailyLimit ? format(p.dailyLimit) + ' P' : '없음'}</dd></div><div><dt>2차 승인</dt><dd>${p.reviewOver ? format(p.reviewOver) + ' P 초과' : '없음'}</dd></div></dl>
       <div class="partner-actions">${action('정책 수정', 'partner-edit', `data-id="${p.id}"`, 'btn outline sm', 'edit')}</div></article>`;
   }).join('')}</div>`;
 }
 
-export function partnerForm(p) {
-  return `<form class="stack" data-form="partner" data-id="${p.id}"><div class="field-grid"><div><label for="pe-div">교환 비율 (제휴 P : 1)</label><input id="pe-div" name="divisor" type="number" min="1" max="20" value="${p.divisor}" required></div>
+export function partnerForm(p, demo = false) {
+  return `<form class="stack" data-form="partner" data-id="${p.id}"><label for="pe-flow">연동 방식</label><select id="pe-flow" name="flow"><option value="push" ${p.flow === 'pull' ? '' : 'selected'}>웹하드 전환 → 회원 확정 → 웹하드 사용 승인 (기본)</option><option value="pull" ${p.flow === 'pull' ? 'selected' : ''}>스마일 포인트에서 교환 신청 → 웹하드 승인 (이전 방식)</option></select>
+    <div class="field-grid"><div><label for="pe-div">교환 비율 (제휴 P : 1) · 2 = 수수료 50%</label><input id="pe-div" name="divisor" type="number" min="1" max="20" value="${p.divisor}" required></div>
     <div><label for="pe-min">최소 신청 금액</label><input id="pe-min" name="min" type="number" min="1" value="${p.min}" required></div>
     <div><label for="pe-limit">일일 승인 한도 (스마일 P)</label><input id="pe-limit" name="dailyLimit" type="number" min="0" value="${p.dailyLimit ?? 0}" required><small class="muted">0은 제한 없음</small></div>
     <div><label for="pe-review">2차 승인 기준 (건당 초과 P)</label><input id="pe-review" name="reviewOver" type="number" min="0" value="${p.reviewOver ?? 0}" required><small class="muted">0은 2차 승인 없음</small></div></div>
     <label class="switch"><input type="checkbox" name="active" ${p.active ? 'checked' : ''}><i></i>교환 서비스 운영</label>
+    ${demo ? `<label class="switch"><input type="checkbox" name="demoAutoApprove" ${p.demoAutoApprove ? 'checked' : ''}><i></i>데모: 포인트 확정을 3초 뒤 자동 승인 (웹하드 서버 흉내)</label>` : ''}
     <p class="muted small">변경 내용은 즉시 사용자 화면에 반영되고 감사 기록에 남습니다. 이미 접수된 신청은 신청 당시 비율로 처리됩니다. 한도를 넘거나 기준보다 큰 교환은 제휴사가 승인해도 최고 관리자 2차 승인 후 적립됩니다.</p>
     <button class="btn primary" type="submit">저장</button></form>`;
 }
@@ -151,13 +156,13 @@ export function partnerForm(p) {
 function products(state) {
   return `<details class="panel create-box"><summary>${icon('plus', 18)} 새 상품 등록</summary><form class="stack" data-form="product-create">
     <div class="field-grid three"><div><label for="pr-name">상품명</label><input id="pr-name" name="name" required maxlength="40"></div><div><label for="pr-brand">브랜드</label><input id="pr-brand" name="brand" required maxlength="20"></div><div><label for="pr-cat">분류</label><select id="pr-cat" name="category">${['카페', '외식', '편의점', '디저트', '문화', '상품권'].map(c => `<option>${c}</option>`).join('')}</select></div>
-    <div><label for="pr-cost">판매 포인트</label><input id="pr-cost" name="cost" type="number" min="100" required></div><div><label for="pr-stock">재고</label><input id="pr-stock" name="stock" type="number" min="0" value="100" required></div></div>
-    <p class="muted small">쿠폰 공급사 API를 연동하면 상품 코드와 공급 단가를 함께 저장하도록 확장합니다.</p><button class="btn primary sm" type="submit">등록</button></form></details>
-    <section class="panel" data-csv><div class="panel-head"><h2>상품 ${state.products.length}종</h2>${action('CSV', 'csv', 'data-name="쿠폰상품"', 'btn outline sm', 'download')}</div><div class="table-scroll"><table><thead><tr><th>상품</th><th>분류</th><th class="numeric">판매 포인트</th><th class="numeric">재고</th><th class="numeric">판매 수</th><th>상태</th><th><span class="sr-only">관리</span></th></tr></thead>
-    <tbody>${state.products.map(p => `<tr><td><div class="cell-user"><span class="thumb">${productVisual(p)}</span><span><strong>${escape(p.name)}</strong><small>${escape(p.brand)}</small></span></div></td><td>${escape(p.category)}</td><td class="numeric">${format(p.cost)}</td><td class="numeric ${p.stock < 30 ? 'minus' : ''}">${format(p.stock)}</td><td class="numeric">${state.transactions.filter(r => r.product === p.id).length}</td><td>${pill(p.active ? '판매 중' : '판매 중지', p.active ? 'complete' : 'canceled')}</td><td>${action('수정', 'product-edit', `data-id="${p.id}"`, 'text-btn')}</td></tr>`).join('')}</tbody></table></div></section>`;
+    <div><label for="pr-cost">판매 포인트</label><input id="pr-cost" name="cost" type="number" min="100" required></div><div><label for="pr-supply">공급가(원)</label><input id="pr-supply" name="supplyPrice" type="number" min="0" placeholder="비우면 판매가의 92%"></div><div><label for="pr-stock">재고</label><input id="pr-stock" name="stock" type="number" min="0" value="100" required></div></div>
+    <p class="muted small">판매 포인트 − 공급가 = 쿠폰 마진(수익)입니다. 쿠폰 공급사 API를 연동하면 공급 단가를 자동으로 받아오도록 확장합니다.</p><button class="btn primary sm" type="submit">등록</button></form></details>
+    <section class="panel" data-csv><div class="panel-head"><h2>상품 ${state.products.length}종</h2>${action('CSV', 'csv', 'data-name="쿠폰상품"', 'btn outline sm', 'download')}</div><div class="table-scroll"><table><thead><tr><th>상품</th><th>분류</th><th class="numeric">판매 포인트</th><th class="numeric">공급가</th><th class="numeric">마진</th><th class="numeric">재고</th><th class="numeric">판매 수</th><th>상태</th><th><span class="sr-only">관리</span></th></tr></thead>
+    <tbody>${state.products.map(p => `<tr><td><div class="cell-user"><span class="thumb">${productVisual(p)}</span><span><strong>${escape(p.name)}</strong><small>${escape(p.brand)}</small></span></div></td><td>${escape(p.category)}</td><td class="numeric">${format(p.cost)}</td><td class="numeric">${format(p.supplyPrice ?? 0)}</td><td class="numeric">${format(p.cost - (p.supplyPrice ?? 0))} (${p.cost ? Math.round((p.cost - (p.supplyPrice ?? 0)) / p.cost * 1000) / 10 : 0}%)</td><td class="numeric ${p.stock < 30 ? 'minus' : ''}">${format(p.stock)}</td><td class="numeric">${state.transactions.filter(r => r.product === p.id).length}</td><td>${pill(p.active ? '판매 중' : '판매 중지', p.active ? 'complete' : 'canceled')}</td><td>${action('수정', 'product-edit', `data-id="${p.id}"`, 'text-btn')}</td></tr>`).join('')}</tbody></table></div></section>`;
 }
 export function productForm(p) {
-  return `<form class="stack" data-form="product-edit" data-id="${p.id}"><div class="field-grid"><div><label for="pp-cost">판매 포인트</label><input id="pp-cost" name="cost" type="number" min="100" value="${p.cost}" required></div><div><label for="pp-stock">재고</label><input id="pp-stock" name="stock" type="number" min="0" value="${p.stock}" required></div></div>
+  return `<form class="stack" data-form="product-edit" data-id="${p.id}"><div class="field-grid"><div><label for="pp-cost">판매 포인트</label><input id="pp-cost" name="cost" type="number" min="100" value="${p.cost}" required></div><div><label for="pp-supply">공급가(원)</label><input id="pp-supply" name="supplyPrice" type="number" min="0" value="${p.supplyPrice ?? ''}"></div><div><label for="pp-stock">재고</label><input id="pp-stock" name="stock" type="number" min="0" value="${p.stock}" required></div></div>
     <label class="switch"><input type="checkbox" name="active" ${p.active ? 'checked' : ''}><i></i>판매 중</label><button class="btn primary" type="submit">저장</button></form>`;
 }
 
@@ -168,7 +173,7 @@ function orders(state, me) {
   const byCat = {};
   for (const r of sold) { const c = state.products.find(p => p.id === r.product)?.category ?? '기타'; byCat[c] = (byCat[c] ?? 0) + r.points; }
   const palette = ['#18563e', '#f0a43a', '#4f6fbf', '#d65a5a', '#8b62c9', '#3aa5a0'];
-  return `<div class="summary-strip"><div><span>판매</span><strong>${sold.length}건</strong></div><div><span>판매 포인트</span><strong>${format(sold.reduce((s, r) => s + r.points, 0))} P</strong></div><div><span>사용 완료</span><strong>${used}건</strong></div><div><span>미사용</span><strong>${sold.length - used}건</strong></div><div><span>취소·환불</span><strong>${rows.length - sold.length}건</strong></div></div>
+  return `<div class="summary-strip"><div><span>판매</span><strong>${sold.length}건</strong></div><div><span>판매 포인트</span><strong>${format(sold.reduce((s, r) => s + r.points, 0))} P</strong></div><div><span>사용 완료</span><strong>${used}건</strong></div><div><span>미사용</span><strong>${sold.length - used}건</strong></div><div><span>취소·환불</span><strong>${rows.length - sold.length}건</strong></div><div><span>쿠폰 마진</span><strong>${format(sold.reduce((s, r) => s + marginOf(state, r), 0))}원</strong></div><div><span>충전 포인트 결제</span><strong>${format(sold.reduce((s, r) => s + (r.paid?.charge ?? 0), 0))} P</strong></div></div>
     <div class="dash-grid two-one"><section class="panel" data-csv><div class="panel-head"><h2>쿠폰 주문</h2>${action('CSV', 'csv', 'data-name="쿠폰주문"', 'btn outline sm', 'download')}</div>${table(state, rows, me, { showUser: true })}</section>
     ${panel('분류별 판매', donut(Object.entries(byCat).map(([label, value], i) => ({ label, value, color: palette[i % palette.length] })), `<strong>${sold.length}</strong><small>판매</small>`))}</div>
     <p class="muted small">미사용 쿠폰은 주문의 <b>상세</b>에서 사유를 입력해 취소·환불할 수 있습니다.</p>`;
@@ -190,7 +195,14 @@ function content(state) {
 function settings(state) {
   const s = state.settings;
   const field = (name, label, hint) => `<div><label for="set-${name}">${label}</label><div class="amount-field"><input id="set-${name}" name="${name}" type="number" min="0" value="${s[name]}" required><span>P</span></div><small class="muted">${hint}</small></div>`;
-  return `<form class="stack" data-form="settings"><section class="panel"><h2>출금 정책</h2><div class="field-grid three">${field('fee', '기본 출금 수수료', '등급별 할인율이 곱해집니다')}${field('withdrawalMinimum', '최소 출금 금액', '수수료보다 커야 합니다')}${field('dailyWithdrawLimit', '1인 일일 출금 한도', '신청 기준 합계')}</div></section>
+  return `<form class="stack" data-form="settings"><section class="panel"><h2>출금 정책</h2><div class="field-grid three">
+      <div><label for="set-withdrawFeeRate">출금 수수료율</label><div class="amount-field"><input id="set-withdrawFeeRate" name="withdrawFeeRate" type="number" min="0" max="30" step="0.01" value="${s.withdrawFeeRate}" required><span>%</span></div><small class="muted">부가세 포함 · 출금 금액 × 수수료율 (원 단위 반올림)</small></div>
+      ${field('withdrawalMinimum', '최소 출금 금액', '이 금액 이상부터 출금 신청 가능')}${field('dailyWithdrawLimit', '1인 일일 출금 한도', '신청 기준 합계')}</div>
+      <label class="switch"><input type="checkbox" name="gradeFeeDiscount" ${s.gradeFeeDiscount ? 'checked' : ''}><i></i>회원 등급별 수수료 할인 적용 (실버 0.8배 · 골드 0.6배 · VIP 무료)</label>
+      <p class="muted small">현재 10,000 P 출금 시 수수료 ${format(Math.round(10000 * s.withdrawFeeRate / 100))} P · 실수령 ${format(10000 - Math.round(10000 * s.withdrawFeeRate / 100))}원. 신용카드 등으로 충전한 포인트는 출금할 수 없습니다.</p></section>
+    <section class="panel"><h2>포인트 충전</h2><div class="field-grid three">${field('chargeMinimum', '1회 최소 충전', '100 P 단위')}${field('chargeMaximum', '1회 최대 충전', '')}${field('dailyChargeLimit', '1인 하루 충전 한도', '결제 대기 포함')}</div>
+      <label class="switch"><input type="checkbox" name="chargeEnabled" ${s.chargeEnabled ? 'checked' : ''}><i></i>포인트 충전 사용 (충전 포인트는 쿠폰·상품권 구매 전용)</label>
+      <p class="muted small">운영 환경의 카드 결제는 PG 계약 후 연동합니다. 그 전에는 데모(모의 결제)에서만 충전됩니다.</p></section>
     <section class="panel"><div class="panel-head"><h2>출금 지급 방식</h2>${payoutBadge(state)}</div><div class="field-grid three">
       <div><label for="set-payoutMode">지급 방식</label><select id="set-payoutMode" name="payoutMode"><option value="manual" ${s.payoutMode === 'api' ? '' : 'selected'}>수동 지급 (송금 후 완료 처리)</option><option value="api" ${s.payoutMode === 'api' ? 'selected' : ''}>지급대행 API (승인 시 자동 이체)</option></select><small class="muted">자동 이체는 지급대행 API 키가 필요합니다</small></div>
       ${field('payoutAutoLimit', '자동 승인 한도', '이 금액 이하는 심사 없이 바로 이체 · 0이면 모두 심사')}</div>
@@ -240,6 +252,8 @@ function payouts(state, me, ui) {
 }
 
 // ───────── 통계 리포트 ─────────
+// 쿠폰 1건의 마진 = 판매 포인트 − 공급가 (구매 시점 공급가가 없으면 현재 상품 공급가)
+const marginOf = (state, row) => row.points - (row.supply ?? state.products.find(p => p.id === row.product)?.supplyPrice ?? row.points);
 function report(state) {
   const rows = state.transactions.filter(r => r.status === 'complete');
   const users = state.accounts.filter(a => a.role === 'user');
@@ -253,7 +267,11 @@ function report(state) {
     payout: monthly(of('withdrawal'), months, net),
     coupon: monthly(of('coupon'), months, r => r.points),
     fee: monthly(of('withdrawal'), months, r => r.fee ?? 0),
+    margin: monthly(of('coupon'), months, r => marginOf(state, r)),
+    charge: monthly(of('charge'), months, r => r.points),
   };
+  const feeTotal = total(of('withdrawal'), r => r.fee ?? 0);
+  const marginTotal = total(of('coupon'), r => marginOf(state, r));
   const issued = total(rows.filter(r => direction(r) === 'in' && r.type !== 'gift_in'), r => Math.abs(r.points)); // 선물은 회원 간 이동이라 제외
   const used = total(rows.filter(r => direction(r) === 'out' && !['gift_out'].includes(r.type)), r => Math.abs(r.points));
   const liability = users.reduce((s, u) => { const b = balances(state, u.id); return s + b.available + b.reserved; }, 0);
@@ -265,7 +283,7 @@ function report(state) {
       ${metric('회원 보유 포인트', format(liability) + ' P', 'wallet', '지급 의무가 있는 포인트(부채)', 0)}
       ${metric('누적 포인트 발행', format(issued) + ' P', 'star', `교환 ${format(total(of('exchange')))} P 포함`, 1)}
       ${metric('누적 포인트 소진', format(used) + ' P', 'shop', `출금 ${format(total(of('withdrawal')))} P · 쿠폰 ${format(total(of('coupon')))} P`, 2)}
-      ${metric('누적 수수료 수익', format(total(of('withdrawal'), r => r.fee ?? 0)) + ' P', 'bank', `출금 ${of('withdrawal').length}건`, 3)}
+      ${metric('누적 수익', format(feeTotal + marginTotal) + '원', 'bank', `출금 수수료 ${format(feeTotal)} · 쿠폰 마진 ${format(marginTotal)}`, 3)}
     </div>
     <div class="dash-grid two-one">
       ${panel('월별 교환 적립 · 출금 지급', barChart(chart, { stacked: true }) + '<div class="chart-legend"><span><i class="green"></i>교환 적립(P)</span><span><i class="extra"></i>출금 지급(원)</span></div>')}
@@ -273,8 +291,8 @@ function report(state) {
     </div>
     <div class="dash-grid two-one">
       <section class="panel" data-csv><div class="panel-head"><h2>월별 집계 (최근 ${months}개월)</h2>${action('CSV', 'csv', 'data-name="월별리포트"', 'btn outline sm', 'download')}</div>
-        <div class="table-scroll"><table><thead><tr><th>월</th><th class="numeric">신규 가입</th><th class="numeric">교환 적립(P)</th><th class="numeric">출금 지급(원)</th><th class="numeric">쿠폰 판매(P)</th><th class="numeric">수수료 수익(P)</th></tr></thead>
-        <tbody>${cols.signup.map((m, i) => `<tr><td>${m.key}</td><td class="numeric">${m.value}명</td><td class="numeric">${format(cols.exchange[i].value)}</td><td class="numeric">${format(cols.payout[i].value)}</td><td class="numeric">${format(cols.coupon[i].value)}</td><td class="numeric">${format(cols.fee[i].value)}</td></tr>`).reverse().join('')}</tbody></table></div></section>
+        <div class="table-scroll"><table><thead><tr><th>월</th><th class="numeric">신규 가입</th><th class="numeric">교환 적립(P)</th><th class="numeric">출금 지급(원)</th><th class="numeric">쿠폰 판매(P)</th><th class="numeric">카드 충전(P)</th><th class="numeric">출금 수수료(원)</th><th class="numeric">쿠폰 마진(원)</th></tr></thead>
+        <tbody>${cols.signup.map((m, i) => `<tr><td>${m.key}</td><td class="numeric">${m.value}명</td><td class="numeric">${format(cols.exchange[i].value)}</td><td class="numeric">${format(cols.payout[i].value)}</td><td class="numeric">${format(cols.coupon[i].value)}</td><td class="numeric">${format(cols.charge[i].value)}</td><td class="numeric">${format(cols.fee[i].value)}</td><td class="numeric">${format(cols.margin[i].value)}</td></tr>`).reverse().join('')}</tbody></table></div></section>
       ${panel('가입 경로', donut(byProvider, `<strong>${users.length}</strong><small>회원</small>`))}
     </div>`;
 }
@@ -336,13 +354,17 @@ export function adminPage(state, me, page, ui, { profilePage, supportPage }) {
     case 'staff': return staff(state, me);
     case 'integrations': return integrations(state);
     case 'requests': {
-      const ex = rows.filter(r => r.type === 'exchange');
-      return `<div class="tabs">${[['', '전체'], ...state.partners.map(p => [p.id, escape(p.name)])].map(([v, l]) => `<button type="button" class="tab ${(ui.partner ?? '') === v ? 'active' : ''}" data-action="ui" data-key="partner" data-value="${v}">${l} <b>${ex.filter(r => r.status === 'pending' && (!v || r.partner === v)).length}</b></button>`).join('')}</div>
+      const ex = rows.filter(r => r.type === 'exchange' && r.flow !== 'push');
+      const asks = (state.confirmations ?? []).filter(item => !ui.partner || item.partner === ui.partner);
+      return `${panel('포인트 확정 · 웹하드 승인 대기', confirmationTable(state, asks.filter(item => item.status === 'pending'), { showUser: true, actions: true }), pill(asks.filter(item => item.status === 'pending').length + '건', 'pending'))}
+        <p class="muted small">정상적으로는 웹하드가 API로 승인합니다. 웹하드 장애 등으로 승인이 오지 않을 때, 웹하드와 확인한 뒤 대신 승인하거나 거절하세요. 처리 내용은 웹하드에 웹훅으로 알리고 감사 기록에 남습니다.</p>
+        ${panel('최근 확정 처리', confirmationTable(state, asks.filter(item => item.status !== 'pending').slice(0, 30), { showUser: true }))}
+        <h2 class="section-label">이전 방식 교환 신청</h2><div class="tabs">${[['', '전체'], ...state.partners.map(p => [p.id, escape(p.name)])].map(([v, l]) => `<button type="button" class="tab ${(ui.partner ?? '') === v ? 'active' : ''}" data-action="ui" data-key="partner" data-value="${v}">${l} <b>${ex.filter(r => r.status === 'pending' && (!v || r.partner === v)).length}</b></button>`).join('')}</div>
         ${pendingQueue(state, me, ex.filter(r => !ui.partner || r.partner === ui.partner))}${panel('처리 내역', table(state, ex.filter(r => r.status !== 'pending' && (!ui.partner || r.partner === ui.partner)), me, { showUser: true, showUpdate: true }))}`;
     }
     case 'payouts': return payouts(state, me, ui);
     case 'report': return report(state);
-    case 'transactions': return `${activityFilters(ui, ['exchange', 'withdrawal', 'coupon', 'attendance', 'reward', 'adjust', 'gift_out', 'gift_in', 'reversal'])}<section class="panel" data-csv>${table(state, applyFilters(state, rows, ui), me, { showUser: true, showUpdate: true })}</section>`;
+    case 'transactions': return `${activityFilters(ui, ['exchange', 'withdrawal', 'charge', 'coupon', 'attendance', 'reward', 'adjust', 'gift_out', 'gift_in', 'reversal'])}<section class="panel" data-csv>${table(state, applyFilters(state, rows, ui), me, { showUser: true, showUpdate: true })}</section>`;
     case 'products': return products(state);
     case 'orders': return orders(state, me);
     case 'settlement': return `<div class="tabs">${[7, 14, 30].map(d => `<button type="button" class="tab ${(Number(ui.days) || 14) === d ? 'active' : ''}" data-action="ui" data-key="days" data-value="${d}">최근 ${d}일</button>`).join('')}</div>${settlementTable(state, state.partners, Number(ui.days) || 14)}`;

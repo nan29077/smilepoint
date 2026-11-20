@@ -6,6 +6,8 @@ const fresh = () => S.freshState(new Date('2026-11-12T03:00:00Z'));
 // 웹하드 연결: 인증번호 요청 → 입력까지 마친다.
 const link = (state, userId, partnerId, loginId) => S.confirmLink(state, userId, partnerId, S.linkPartner(state, userId, partnerId, loginId).code);
 const consent = { terms: true, privacy: true, age: true };
+// 이전 방식(스마일 포인트에서 교환 신청 → 웹하드 승인) 검증용: 제휴사를 'pull' 방식으로 바꾼다.
+const legacy = state => { for (const partner of state.partners) partner.flow = 'pull'; return state; };
 
 test('테스트 계정·이메일 로그인과 정지 계정 차단', () => {
   const state = fresh();
@@ -19,7 +21,7 @@ test('테스트 계정·이메일 로그인과 정지 계정 차단', () => {
 });
 
 test('회원가입: 약관·비밀번호 검증, 가입·추천 보너스, 소셜 로그인 재사용', () => {
-  const state = fresh();
+  const state = legacy(fresh());
   const base = { name: '홍길동', email: 'hong@test.com', password: 'abcd1234', confirm: 'abcd1234', terms: true, privacy: true, age: true };
   assert.throws(() => S.signup(state, { ...base, age: false }), /약관/);
   assert.throws(() => S.signup(state, { ...base, password: 'short', confirm: 'short' }));
@@ -49,7 +51,7 @@ test('회원가입: 약관·비밀번호 검증, 가입·추천 보너스, 소�
 });
 
 test('교환 대기는 승인 시 한 번만 적립되고 웹하드 관리자는 자사 거래만 처리한다', () => {
-  const state = fresh();
+  const state = legacy(fresh());
   const before = S.balances(state, 'u1');
   const row = S.exchange(state, 'u1', 'green', 4000);
   assert.equal(S.balances(state, 'u1').pending, before.pending + 2000);
@@ -62,21 +64,29 @@ test('교환 대기는 승인 시 한 번만 적립되고 웹하드 관리자는
   assert.throws(() => S.exchange(state, 'u1', 'file', 2000), /연결/);
 });
 
-test('출금: 등급 수수료, 반려 사유 필수, 반려·취소 시 복원', () => {
+test('출금: 수수료율(부가세 포함)·최소 금액, 충전 포인트 출금 불가, 반려 사유 필수, 반려·취소 시 복원', () => {
   const state = fresh();
   const before = S.balances(state, 'u1');
-  const first = S.withdraw(state, 'u1', 5000);
-  assert.equal(first.fee, 400); // 실버 등급
-  assert.equal(S.balances(state, 'u1').reserved, 5000);
+  assert.equal(state.settings.withdrawFeeRate, 5.5);
+  assert.equal(state.settings.withdrawalMinimum, 10000);
+  const first = S.withdraw(state, 'u1', 10000);
+  assert.equal(first.fee, 550, '10,000 P × 5.5% = 550');
+  assert.equal(first.feeRate, 5.5);
+  assert.equal(S.balances(state, 'u1').reserved, 10000);
   S.update(state, 'u1', first.id, 'canceled');
   assert.deepEqual(S.balances(state, 'u1'), before);
-  const second = S.withdraw(state, 'u1', 6000);
+  const second = S.withdraw(state, 'u1', 12345);
+  assert.equal(second.fee, 679, '원 단위 반올림');
   assert.throws(() => S.update(state, 'a1', second.id, 'rejected'), /사유/);
   S.update(state, 'a1', second.id, 'rejected', '계좌 확인 필요');
   assert.equal(S.balances(state, 'u1').available, before.available);
-  assert.throws(() => S.withdraw(state, 'u1', 4999));
+  assert.throws(() => S.withdraw(state, 'u1', 9999), /최소/);
+  assert.ok(before.charged > 0 && before.withdrawable === before.available - before.charged);
+  assert.throws(() => S.withdraw(state, 'u1', before.withdrawable + 1), /충전한 포인트/, '충전 포인트는 출금 불가');
+  state.settings.gradeFeeDiscount = true;
+  assert.equal(S.withdraw(state, 'u1', 10000).fee, 440, '등급 할인을 켜면 실버 0.8배 (4.4%)');
   const signup = S.signup(state, { name: '새회원', email: 'n@test.com', password: 'abcd1234', confirm: 'abcd1234', terms: true, privacy: true, age: true });
-  assert.throws(() => S.withdraw(state, signup.id, 5000), /계좌/);
+  assert.throws(() => S.withdraw(state, signup.id, 10000), /계좌/);
   assert.throws(() => S.setBank(state, signup.id, { bank: '신한은행', number: '1101234567', holder: '다른이름' }), /예금주/);
 });
 
@@ -118,7 +128,7 @@ test('관리자: 운영진·제휴사·상품 생성과 역할별 스냅샷', ()
 });
 
 test('웹하드 연결: 재연결로 잔액이 늘지 않고 아이디는 한 회원만', () => {
-  const state = fresh();
+  const state = legacy(fresh());
   const linked = link(state, 'u1', 'disk', 'disk_user');
   S.exchange(state, 'u1', 'disk', 4000);
   const left = S.partnerAvailable(state, 'u1', 'disk');
@@ -156,7 +166,7 @@ test('선물·계좌 악용 방지와 쿠폰 취소', () => {
 });
 
 test('이벤트 적립·정산 대사·비밀번호 재설정·웹훅 주소 검증', () => {
-  const state = fresh();
+  const state = legacy(fresh());
   link(state, 'u1', 'disk', 'disk_user');
   const row = S.exchange(state, 'u1', 'disk', 4000);
   const before = S.balances(state, 'u1').available;
@@ -182,7 +192,7 @@ test('이벤트 적립·정산 대사·비밀번호 재설정·웹훅 주소 검
 });
 
 test('웹하드 연결은 인증번호로 본인 확인 — 남의 아이디로 연결·교환 불가', () => {
-  const state = fresh();
+  const state = legacy(fresh());
   const sent = S.linkPartner(state, 'u2', 'cloud', 'victim_01');
   assert.equal(sent.pending, true);
   assert.ok(/^\d{6}$/.test(sent.code));
@@ -220,7 +230,7 @@ test('계좌 1원 인증, 이름 변경 잠금, 관리자 승인과 지급 계�
   assert.throws(() => S.approveBank(state, 'p1', other.id));
   S.approveBank(state, 'a1', other.id);
   assert.equal(S.account(state, other.id).bank.number, '9988776655');
-  const row = S.withdraw(state, 'u1', 5000);
+  const row = S.withdraw(state, 'u1', 10000);
   const admin = S.snapshot(state, S.account(state, 'a1'));
   assert.ok(admin.accounts.every(a => !a.bank || a.bank.number.startsWith('••••')), '관리자 화면 데이터에는 계좌 끝 4자리만');
   assert.ok(admin.partners.every(p => !p.apiKey && p.apiKeyHint), '관리자 화면 데이터에도 API 키 전체는 없음');
@@ -242,7 +252,7 @@ test('쿠폰 번호를 본 뒤에는 직접 환불 불가, 화면 데이터에 �
 });
 
 test('제휴사 고액·일일 한도 초과 교환은 최고 관리자 2차 승인, 완료 교환 회수', () => {
-  const state = fresh();
+  const state = legacy(fresh());
   state.partners.find(p => p.id === 'cloud').reviewOver = 5000;
   link(state, 'u1', 'disk', 'disk_big');
   const before = S.balances(state, 'u1').available;
@@ -270,7 +280,7 @@ test('제휴사 고액·일일 한도 초과 교환은 최고 관리자 2차 승
 
 test('회원 탈퇴: 개인정보 파기, 로그인 차단, 처리 중 거래가 있으면 거부', () => {
   const state = fresh();
-  assert.throws(() => S.deleteAccount(state, 'u1', { password: 'smile1234' }), /처리 중/);
+  assert.throws(() => S.deleteAccount(state, 'u1', { password: 'smile1234' }), /미확정 포인트/);
   const n = S.signup(state, { name: '탈퇴자', email: 'bye@test.com', password: 'abcd1234', confirm: 'abcd1234', phone: '010-1111-2222', terms: true, privacy: true, age: true });
   assert.throws(() => S.deleteAccount(state, n.id, { password: 'wrong123' }), /비밀번호/);
   S.deleteAccount(state, n.id, { password: 'abcd1234' });
@@ -309,36 +319,37 @@ test('입력값 검증·보안 난수·내부망 주소 판별', () => {
 
 test('출금 지급: 수동 지급, 지급대행 이체 흐름, 자동 승인, 실패 후 재시도·반려', () => {
   const state = fresh();
+  S.adjust(state, 'a1', 'u1', 50000, '테스트 지급');
   const before = S.balances(state, 'u1').available;
   // 수동 지급: 승인하면 바로 완료
   state.settings.payoutMode = 'manual';
-  const manual = S.withdraw(state, 'u1', 5000);
+  const manual = S.withdraw(state, 'u1', 10000);
   S.update(state, 'a1', manual.id, 'complete');
   assert.equal(manual.status, 'complete');
   assert.equal(manual.payout.method, 'manual');
   // 지급대행: 승인 → 이체 중 → 입금 완료
   state.settings.payoutMode = 'api';
-  const row = S.withdraw(state, 'u1', 5000);
+  const row = S.withdraw(state, 'u1', 10000);
   assert.equal(row.status, 'pending');
   S.update(state, 'a1', row.id, 'complete');
   assert.equal(row.status, 'processing');
   assert.equal(row.payout.status, 'queued');
-  assert.equal(S.balances(state, 'u1').reserved, 5000, '이체 중에도 포인트는 묶여 있다');
+  assert.equal(S.balances(state, 'u1').reserved, 10000, '이체 중에도 포인트는 묶여 있다');
   assert.throws(() => S.update(state, 'u1', row.id, 'canceled'), /변경할 수 없습니다/, '이체 요청 후에는 취소할 수 없다');
   assert.throws(() => S.setBank(state, 'u1', { bank: '신한은행', number: '1101234567', holder: '스마일 회원' }), /처리 중/);
-  assert.deepEqual(S.payoutRequest(state, row), { transferId: row.id, bank: '국민은행', bankCode: '004', accountNumber: '123401043070', holder: '스마일 회원', amount: 4600, memo: '스마일포인트' });
+  assert.deepEqual(S.payoutRequest(state, row), { transferId: row.id, bank: '국민은행', bankCode: '004', accountNumber: '123401043070', holder: '스마일 회원', amount: 9450, memo: '스마일포인트' });
   S.payoutSent(state, row.id, { ref: 'TK-1', provider: '테스트' });
   assert.equal(row.payout.status, 'sent');
   S.payoutResult(state, row.id, { ok: true, ref: 'TK-1' });
   assert.equal(row.status, 'complete');
   assert.equal(row.payout.status, 'paid');
-  assert.equal(S.balances(state, 'u1').available, before - 10000);
+  assert.equal(S.balances(state, 'u1').available, before - 20000);
   assert.throws(() => S.payoutResult(state, row.id, { ok: true }), /찾을 수 없습니다/, '같은 결과가 다시 와도 두 번 처리하지 않는다');
   // 자동 승인 한도
-  state.settings.payoutAutoLimit = 6000;
-  const auto = S.withdraw(state, 'u1', 6000);
+  state.settings.payoutAutoLimit = 11000;
+  const auto = S.withdraw(state, 'u1', 11000);
   assert.equal(auto.status, 'processing');
-  assert.equal(S.withdraw(state, 'u1', 7000).status, 'pending', '한도 초과는 심사 대기');
+  assert.equal(S.withdraw(state, 'u1', 12000).status, 'pending', '한도 초과는 심사 대기');
   // 실패 → 재시도 → 실패 → 반려(포인트 복원)
   S.payoutResult(state, auto.id, { ok: false, error: '수취 계좌 오류' });
   assert.equal(auto.status, 'processing');
@@ -349,16 +360,137 @@ test('출금 지급: 수동 지급, 지급대행 이체 흐름, 자동 승인, �
   assert.equal(auto.payout.status, 'queued');
   assert.equal(S.runMockPayouts(state), 1);
   assert.equal(auto.status, 'complete', '모의 지급대행은 바로 입금 완료 처리');
-  const bad = S.withdraw(state, 'u1', 5000);
+  const bad = S.withdraw(state, 'u1', 10000);
   S.payoutResult(state, bad.id, { ok: false, error: '응답 없음' });
   assert.throws(() => S.refundPayout(state, 'a1', bad.id, ''), /사유/);
   const reserved = S.balances(state, 'u1').available;
   S.refundPayout(state, 'a1', bad.id, '계좌 정보 오류');
   assert.equal(bad.status, 'rejected');
-  assert.equal(S.balances(state, 'u1').available, reserved + 5000);
-  const hand = S.withdraw(state, 'u1', 5000);
+  assert.equal(S.balances(state, 'u1').available, reserved + 10000);
+  const hand = S.withdraw(state, 'u1', 10000);
   S.payoutResult(state, hand.id, { ok: false, error: '점검' });
   S.completePayoutManually(state, 'a1', hand.id);
   assert.equal(hand.status, 'complete');
   assert.equal(hand.payout.method, 'manual');
+});
+
+test('웹하드 전환: 미확정 적립 → 일부 확정(먼저 들어온 순) → 승인·거절, 중복 전송 무시', () => {
+  const state = fresh();
+  const before = S.balances(state, 'u1');
+  assert.equal(before.unconfirmed, 4000, '샘플: 그린파일에서 넘어온 미확정 4,000 P');
+  assert.throws(() => S.transferIn(state, 'green', { transferId: 'G-1', member: 'nobody', source: 10000, points: 5000 }), e => e.code === 'member_not_linked');
+  assert.throws(() => S.transferIn(state, 'green', { transferId: 'bad id!', member: 'smile_green', source: 10000, points: 5000 }), e => e.code === 'invalid_transfer_id');
+  assert.throws(() => S.transferIn(state, 'green', { transferId: 'G-1', member: 'smile_green', source: 1000, points: 5000 }), e => e.code === 'invalid_amount');
+  const first = S.transferIn(state, 'green', { transferId: 'G-1', member: 'Smile_Green', source: 10000, points: 5000 });
+  assert.equal(first.duplicate, false);
+  assert.equal(first.row.status, 'held');
+  assert.equal(first.row.rate, 2);
+  assert.equal(S.transferIn(state, 'green', { transferId: 'G-1', member: 'smile_green', source: 10000, points: 5000 }).duplicate, true);
+  assert.equal(S.balances(state, 'u1').unconfirmed, 9000);
+  assert.equal(S.balances(state, 'u1').available, before.available, '미확정은 사용 불가');
+  assert.throws(() => S.order(state, 'u1', 'gift30', 2), /부족/, '미확정 포인트로는 구매할 수 없다');
+  assert.throws(() => S.requestConfirm(state, 'u1', 'green', 9001), /이내/);
+  assert.throws(() => S.requestConfirm(state, 'u1', 'cloud', 1), /미확정 포인트가 없습니다/);
+  // 6,000 P 확정: 샘플 4,000 P 전체 + G-1에서 2,000 P (G-1은 3,000 P가 미확정으로 남음)
+  const c1 = S.requestConfirm(state, 'u1', 'green', 6000);
+  assert.deepEqual(c1.transfers.map(t => t.points), [4000, 2000]);
+  assert.equal(c1.transfers[1].transferId, 'G-1');
+  assert.equal(S.transferView(state, 'green', 'G-1').unconfirmed, 3000);
+  assert.equal(S.transferView(state, 'green', 'G-1').source, 10000, '나눠도 웹하드 차감 합계는 그대로');
+  assert.ok(state.webhooks.some(h => h.event === 'points.confirm_requested' && h.data.confirmationId === c1.id && h.data.points === 6000));
+  assert.throws(() => S.unlinkPartner(state, 'u1', 'green'), /승인을 기다리는/);
+  assert.throws(() => S.approveConfirm(state, 'p2', c1.id), /찾을 수 없/, '다른 웹하드는 승인 불가');
+  assert.throws(() => S.approveConfirm(state, 'u1', c1.id), /찾을 수 없/);
+  S.approveConfirm(state, 'p1', c1.id);
+  assert.equal(S.approveConfirm(state, 'p1', c1.id).status, 'approved', '다시 승인해도 결과만 돌려준다');
+  const after = S.balances(state, 'u1');
+  assert.deepEqual([after.available, after.unconfirmed, after.confirming], [before.available + 6000, 3000, 0]);
+  assert.equal(S.grade(state, 'u1').exchanged, S.grade(fresh(), 'u1').exchanged + 6000, '확정된 포인트는 등급 누적에 반영');
+  assert.equal(S.settlementOurs(state, 'green', S.kstDay()).points, 6000, '확정 승인된 금액이 정산 대상');
+  // 거절 → 다시 미확정
+  const c2 = S.requestConfirm(state, 'u1', 'green', 3000);
+  assert.throws(() => S.rejectConfirm(state, 'a1', c2.id, ''), /사유/, '운영팀 거절은 사유 필수');
+  S.rejectConfirm(state, 'p1', c2.id, '');
+  assert.equal(c2.reason, '웹하드에서 사용 승인이 거절되었습니다.');
+  assert.equal(S.balances(state, 'u1').unconfirmed, 3000);
+  assert.throws(() => S.approveConfirm(state, 'p1', c2.id), /거절된/);
+  // 웹하드 전환 취소는 미확정분만
+  S.cancelTransfer(state, 'p1', 'G-1', '판매 취소');
+  assert.equal(S.balances(state, 'u1').unconfirmed, 0);
+  assert.throws(() => S.cancelTransfer(state, 'p1', 'G-1'), /취소할 수 없습니다/);
+  assert.throws(() => S.exchange(state, 'u1', 'green', 2000), /사이트에서/, '전환 방식 제휴사는 스마일 포인트에서 교환 신청 불가');
+});
+
+test('전체 확정·첫 확정 보너스·데모 자동 승인·탈퇴 제한', () => {
+  const state = fresh();
+  const n = S.signup(state, { name: '새회원', email: 'push@test.com', password: 'abcd1234', confirm: 'abcd1234', terms: true, privacy: true, age: true });
+  link(state, n.id, 'cloud', 'push_cloud');
+  link(state, n.id, 'green', 'push_green');
+  S.simulateTransfer(state, n.id, 'cloud', 2000);
+  S.transferIn(state, 'green', { transferId: 'G-9', member: 'push_green', source: 4000, points: 2000 });
+  assert.throws(() => S.deleteAccount(state, n.id, { password: 'abcd1234' }), /미확정/);
+  const list = S.requestConfirmAll(state, n.id);
+  assert.equal(list.length, 2);
+  assert.equal(S.mockConfirmQueue(state).length, 1, '클라우드박스만 데모 자동 승인');
+  assert.equal(S.runMockConfirms(state), 1);
+  assert.equal(S.balances(state, n.id).available, 2000 + 1000, '첫 확정 승인 시 가입 보너스 지급');
+  state.settings.mockWebhardBalance = false;
+  assert.equal(S.mockConfirmQueue(state).length, 0, '운영 데이터에서는 자동 승인 흉내를 하지 않는다');
+  assert.throws(() => S.requestConfirmAll(state, n.id), /없습니다/);
+});
+
+test('포인트 충전: 쿠폰 전용, 충전분부터 사용, 출금·선물 불가, 관리자 취소', () => {
+  const state = fresh();
+  const before = S.balances(state, 'u2');
+  assert.throws(() => S.startCharge(state, 'u2', 500), /사이로/);
+  assert.throws(() => S.startCharge(state, 'u2', 10050), /100 P 단위/);
+  assert.throws(() => S.startCharge(state, 'u2', 10000, 'bitcoin'), /결제 수단/);
+  const row = S.startCharge(state, 'u2', 10000, 'card');
+  assert.equal(S.balances(state, 'u2').available, before.available, '결제 승인 전에는 적립되지 않는다');
+  S.completeCharge(state, row.id, { provider: '테스트PG', ref: 'T1' });
+  assert.throws(() => S.completeCharge(state, row.id), /찾을 수 없/, '같은 결제를 두 번 승인하지 않는다');
+  const charged = S.balances(state, 'u2');
+  assert.deepEqual([charged.available, charged.charged, charged.withdrawable], [before.available + 10000, 10000, before.withdrawable]);
+  const [coupon] = S.order(state, 'u2', 'coffee');
+  assert.deepEqual(coupon.paid, { charge: 4500, point: 0 });
+  assert.equal(coupon.supply, state.products.find(p => p.id === 'coffee').supplyPrice);
+  assert.equal(S.balances(state, 'u2').charged, 5500);
+  assert.throws(() => S.cancelCharge(state, 'a1', row.id, '요청'), /이미 사용한/);
+  S.cancelCoupon(state, 'u2', coupon.id);
+  assert.equal(S.balances(state, 'u2').charged, 10000, '쿠폰 취소 시 충전 포인트로 복원');
+  state.settings.dailyChargeLimit = 15000;
+  assert.throws(() => S.startCharge(state, 'u2', 6000), /하루 충전 한도/);
+  assert.throws(() => S.cancelCharge(state, 'u2', row.id, '요청'), /권한/);
+  S.cancelCharge(state, 'a1', row.id, '회원 요청');
+  assert.equal(S.balances(state, 'u2').available, before.available);
+  state.settings.chargeEnabled = false;
+  assert.throws(() => S.startCharge(state, 'u2', 1000), /이용할 수 없습니다/);
+});
+
+test('운영 설정: 출금 수수료율·최소 금액·충전 한도 검증, 상품 공급가, 이전 데이터 변환', () => {
+  const state = fresh();
+  S.updateSettings(state, 'a1', { withdrawFeeRate: '3.3', withdrawalMinimum: '20000' });
+  assert.deepEqual([state.settings.withdrawFeeRate, state.settings.withdrawalMinimum], [3.3, 20000]);
+  assert.match(state.audit[0].detail, /3\.3%/);
+  assert.equal(S.feeFor(state, 'u1', 20000), 660);
+  assert.throws(() => S.updateSettings(state, 'a1', { withdrawFeeRate: 31 }), /0~30%/);
+  assert.throws(() => S.updateSettings(state, 'a1', { withdrawFeeRate: 'abc' }), /0~30%/);
+  assert.throws(() => S.updateSettings(state, 'a1', { chargeMinimum: 50 }), /충전/);
+  assert.throws(() => S.updateSettings(state, 'a1', { chargeMaximum: 2000000 }), /충전/, '1회 최대가 하루 한도보다 클 수 없다');
+  assert.throws(() => S.updateSettings(state, 'p1', { withdrawFeeRate: 1 }), /권한/);
+  S.updateProduct(state, 'a1', 'coffee', { cost: 5000, stock: 10, active: true, supplyPrice: 4400 });
+  assert.equal(state.products.find(p => p.id === 'coffee').supplyPrice, 4400);
+  assert.throws(() => S.updateProduct(state, 'a1', 'coffee', { cost: 5000, stock: 10, active: true, supplyPrice: 6000 }), /공급가/);
+  // 이전 버전 데이터(건당 고정 수수료)를 불러오면 새 정책으로 바뀐다
+  const old = fresh();
+  for (const key of ['withdrawFeeRate', 'gradeFeeDiscount', 'chargeEnabled', 'chargeMinimum', 'chargeMaximum', 'dailyChargeLimit']) delete old.settings[key];
+  old.settings.withdrawalMinimum = 5000;
+  delete old.confirmations;
+  for (const p of old.partners) { delete p.flow; delete p.demoAutoApprove; }
+  for (const p of old.products) delete p.supplyPrice;
+  S.normalize(old, true);
+  assert.deepEqual([old.settings.withdrawFeeRate, old.settings.withdrawalMinimum, old.settings.chargeEnabled], [5.5, 10000, true]);
+  assert.ok(old.partners.every(p => p.flow === 'push'));
+  assert.deepEqual(old.confirmations, []);
+  assert.ok(old.products.every(p => p.supplyPrice > 0));
 });

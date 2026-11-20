@@ -33,6 +33,18 @@ export const ops = {
 
   // 사용자
   exchange: user((s, a, p) => S.exchange(s, a.id, p.partnerId, p.amount)),
+  // 웹하드에서 넘어온 미확정 포인트 확정 (전액·일부) → 웹하드 사용 승인 후 사용 가능
+  requestConfirm: user((s, a, p) => S.requestConfirm(s, a.id, p.partnerId, p.amount)),
+  requestConfirmAll: user((s, a) => S.requestConfirmAll(s, a.id)),
+  // 데모 전용: 웹하드에서 전환을 신청한 것처럼 흉내 낸다
+  simulateTransfer: { ...user((s, a, p) => S.simulateTransfer(s, a.id, p.partnerId, p.amount)), demo: true },
+  // 포인트 충전: 데모는 모의 PG가 바로 승인한다. 운영은 PG 계약·연동 후 결제창을 거쳐 승인된다.
+  charge: user((s, a, p, o) => {
+    if (!o.demo && !o.pg) throw new S.AppError('카드 결제(PG) 연동을 준비 중입니다. 연동이 끝나면 충전할 수 있습니다.', 503);
+    const row = S.startCharge(s, a.id, p.amount, p.method);
+    if (o.pg) return o.pg(row);
+    return S.completeCharge(s, row.id, { provider: '모의 PG', ref: 'MOCK-PG-' + row.id });
+  }),
   // 인증번호는 데모에서만 화면에 돌려준다 (운영에서는 제휴사·은행을 통해서만 전달).
   linkPartner: user((s, a, p, o) => demoOnly(S.linkPartner(s, a.id, p.partnerId, p.loginId), o)),
   confirmLink: user((s, a, p) => S.confirmLink(s, a.id, p.partnerId, p.code)),
@@ -71,11 +83,18 @@ export const ops = {
   setWebhook: partner((s, a, p) => S.setWebhook(s, a.id, p.url)),
   testWebhook: partner((s, a) => S.queueWebhook(s, a.partnerId, 'ping', { message: '스마일 포인트 웹훅 연결 테스트' })),
   confirmSettlement: partner((s, a, p) => S.confirmSettlement(s, a.partnerId, p.date, p, a.id)),
+  // 화면에서 직접 전환을 등록할 때 (보통은 API POST /api/v1/transfers 로 들어온다)
+  partnerTransfer: partner((s, a, p) => S.transferIn(s, a.partnerId, { transferId: p.transferId, member: p.member, source: p.source, points: p.points, memo: p.memo })),
+  cancelTransfer: reviewer((s, a, p) => S.cancelTransfer(s, a.id, p.transferId, p.reason)),
+  // 포인트 확정 요청 승인·거절 (웹하드 관리자, 또는 웹하드 연동 장애 시 최고 관리자)
+  approveConfirm: reviewer((s, a, p) => S.approveConfirm(s, a.id, p.id)),
+  rejectConfirm: reviewer((s, a, p) => S.rejectConfirm(s, a.id, p.id, p.reason)),
 
   // 최고 관리자
   retryPayout: admin((s, a, p) => S.retryPayout(s, a.id, p.id)),
   refundPayout: admin((s, a, p) => S.refundPayout(s, a.id, p.id, p.reason)),
   completePayout: admin((s, a, p) => S.completePayoutManually(s, a.id, p.id)),
+  cancelCharge: admin((s, a, p) => S.cancelCharge(s, a.id, p.id, p.reason)),
   adjust: admin((s, a, p) => S.adjust(s, a.id, p.userId, p.amount, p.reason)),
   setMemberStatus: admin((s, a, p) => S.setMemberStatus(s, a.id, p.userId, p.status)),
   approveBank: admin((s, a, p) => S.approveBank(s, a.id, p.userId)),
@@ -109,7 +128,7 @@ export const ops = {
  * @param {object} payload 요청 값
  * @param {{demo?: boolean, takeSocial?: Function}} options demo가 false면 테스트 로그인·초기화를 막고 인증번호를 숨긴다
  */
-const maintenanceBlocked = new Set(['exchange', 'linkPartner', 'confirmLink', 'unlinkPartner', 'withdraw', 'setBank', 'confirmBank', 'order', 'cancelCoupon', 'attend', 'gift', 'cancel']);
+const maintenanceBlocked = new Set(['exchange', 'requestConfirm', 'requestConfirmAll', 'simulateTransfer', 'charge', 'linkPartner', 'confirmLink', 'unlinkPartner', 'withdraw', 'setBank', 'confirmBank', 'order', 'cancelCoupon', 'attend', 'gift', 'cancel']);
 
 export function dispatch(state, actorId, op, payload = {}, options = {}) {
   const demo = options.demo ?? true;
@@ -134,6 +153,7 @@ export function clean(result) {
   if (result && typeof result === 'object' && 'role' in result && 'email' in result) return S.privateAccount(result);
   if (result && typeof result === 'object') {
     const { password, apiKey, totp, bankRequest, ...rest } = result;
+    if (rest.row && typeof rest.row === 'object') rest.row = clean(rest.row);
     return rest;
   }
   return result ?? null;

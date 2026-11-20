@@ -60,7 +60,7 @@ test('지급대행: 승인 → 이체 요청 → 결과 통지로 입금 완료'
   assert.deepEqual(health.payout, { provider: '테스트페이', live: true, mock: false, webhook: true });
   const user = await call('loginAs', { id: 'u1' });
   const admin = await call('loginAs', { id: 'a1' });
-  const requested = await call('withdraw', { amount: 5000 }, user.cookie);
+  const requested = await call('withdraw', { amount: 12000 }, user.cookie);
   assert.equal(requested.body.result.status, 'pending');
   const id = requested.body.result.id;
   const approved = await call('review', { id, status: 'complete' }, admin.cookie);
@@ -72,7 +72,7 @@ test('지급대행: 승인 → 이체 요청 → 결과 통지로 입금 완료'
   assert.equal(headers['idempotency-key'], id, '거래번호를 멱등 키로 보낸다');
   assert.equal(headers.authorization, 'Bearer pk_test');
   assert.equal(headers['x-signature'], 'sha256=' + createHmac('sha256', 'sk_test').update(JSON.stringify(body)).digest('hex'));
-  assert.deepEqual({ transferId: body.transferId, bankCode: body.bankCode, accountNumber: body.accountNumber, holderName: body.holderName, amount: body.amount }, { transferId: id, bankCode: '004', accountNumber: '123401043070', holderName: '스마일 회원', amount: 4600 });
+  assert.deepEqual({ transferId: body.transferId, bankCode: body.bankCode, accountNumber: body.accountNumber, holderName: body.holderName, amount: body.amount }, { transferId: id, bankCode: '004', accountNumber: '123401043070', holderName: '스마일 회원', amount: 11340 });
   assert.equal((await call('cancel', { id }, user.cookie)).status, 400, '이체 중에는 회원이 취소할 수 없다');
   // 결과 통지
   const event = { transferId: id, status: 'COMPLETED', transferKey: 'TK-1' };
@@ -92,7 +92,7 @@ test('지급대행: 이체 거절은 실패로 남고 관리자가 반려하면 
   const admin = await call('loginAs', { id: 'a1' });
   const balance = async () => { const state = (await (await fetch(base + '/api/state', { headers: { cookie: user.cookie } })).json()).state; return state.transactions.filter(r => ['pending', 'processing'].includes(r.status) && r.type === 'withdrawal').length; };
   reply = () => ({ code: 400, body: { status: 'FAILED', message: '수취 계좌 오류' } });
-  const id = (await call('withdraw', { amount: 6000 }, user.cookie)).body.result.id;
+  const id = (await call('withdraw', { amount: 15000 }, user.cookie)).body.result.id;
   await call('review', { id, status: 'complete' }, admin.cookie);
   const failed = await until(async () => { const row = await rowOf(admin.cookie, id); return row.payout.status === 'failed' && row; });
   assert.equal(failed.status, 'processing');

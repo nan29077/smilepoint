@@ -3,13 +3,21 @@ import { animals, announcementSeeds, bankCodes, banks, grades, partnerSeeds, pro
 export const storageKey = 'smilepoint-demo-v2';
 export const types = {
   exchange: '포인트 교환', withdrawal: '계좌 출금', coupon: '쿠폰 구매', attendance: '출석체크',
-  reward: '이벤트 적립', adjust: '관리자 조정', gift_out: '포인트 선물', gift_in: '선물 받음', reversal: '교환 회수',
+  reward: '이벤트 적립', adjust: '관리자 조정', gift_out: '포인트 선물', gift_in: '선물 받음', reversal: '교환 회수', charge: '포인트 충전',
 };
-export const statuses = { pending: '처리 대기', processing: '이체 중', complete: '완료', rejected: '반려', canceled: '취소' };
+// held: 웹하드에서 넘어왔지만 아직 확정 전(미확정) · confirming: 확정 요청 후 웹하드 사용 승인 대기
+export const statuses = { pending: '처리 대기', processing: '이체 중', complete: '완료', rejected: '반려', canceled: '취소', held: '미확정', confirming: '승인 대기' };
+export const chargeMethods = { card: '신용·체크카드', easy: '간편결제', transfer: '계좌이체' };
 // 출금의 지급대행 이체 단계 (row.payout.status)
 export const payoutLabels = { queued: '이체 요청 대기', sent: '이체 처리 중', paid: '입금 완료', failed: '이체 실패' };
-const credits = new Set(['exchange', 'attendance', 'reward', 'gift_in']);
+const credits = new Set(['exchange', 'attendance', 'reward', 'gift_in', 'charge']);
 const day = 86400000;
+// 출금 수수료: 출금 금액의 %(부가세 포함) · 최소 출금 금액 — 최고 관리자가 운영 설정에서 바꾼다.
+const feeDefaults = { withdrawFeeRate: 5.5, withdrawalMinimum: 10000, gradeFeeDiscount: false };
+// 포인트 충전(신용카드 등): 충전한 포인트는 쿠폰·상품권 구매에만 쓰고 현금으로 출금할 수 없다.
+const chargeDefaults = { chargeEnabled: true, chargeMinimum: 1000, chargeMaximum: 500000, dailyChargeLimit: 1000000 };
+// 쿠폰 공급가 기본값(데모): 판매 포인트의 92% (마진 약 8%)
+export const defaultSupply = cost => Math.round(cost * 0.92 / 10) * 10;
 
 // ───────── 공통 유틸 ─────────
 export const kstDay = (value = new Date()) => new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Seoul' }).format(new Date(value));
@@ -75,10 +83,12 @@ export function freshState(now = new Date()) {
   ];
   const state = {
     version: 2, seq: 1023,
-    settings: { fee: 500, withdrawalMinimum: 5000, dailyWithdrawLimit: 500000, attendancePoints: 10, attendanceBonus: 50, signupBonus: 1000, referralBonus: 500, giftMinimum: 1000, dailyGiftLimit: 100000, maintenance: false, mockWebhardBalance: true, payoutMode: 'api', payoutAutoLimit: 0 },
+    settings: { ...feeDefaults, fee: 500, dailyWithdrawLimit: 500000, attendancePoints: 10, attendanceBonus: 50, signupBonus: 1000, referralBonus: 500, giftMinimum: 1000, dailyGiftLimit: 100000, maintenance: false, mockWebhardBalance: true, payoutMode: 'api', payoutAutoLimit: 0, ...chargeDefaults },
     session: null,
-    partners: partnerSeeds.map((item, i) => ({ ...item, apiKey: newApiKey(), webhook: `https://api.${item.id}.example.com/smilepoint/webhook`, ip: `203.0.113.${10 + i}`, dailyLimit: 1000000, reviewOver: 100000 })),
-    products: productSeeds.map(item => ({ ...item })),
+    // flow 'push': 웹하드 쪽에서 회원이 전환을 신청하면 수수료를 뺀 포인트가 API로 넘어온다 (미확정 → 확정 요청 → 웹하드 사용 승인)
+    // demoAutoApprove: 데모에서 웹하드 서버의 자동 승인을 흉내 낸다 (그린파일은 담당자가 직접 승인하는 예시)
+    partners: partnerSeeds.map((item, i) => ({ ...item, apiKey: newApiKey(), webhook: `https://api.${item.id}.example.com/smilepoint/webhook`, ip: `203.0.113.${10 + i}`, dailyLimit: 1000000, reviewOver: 100000, flow: 'push', demoAutoApprove: item.id !== 'green' })),
+    products: productSeeds.map(item => ({ ...item, supplyPrice: defaultSupply(item.cost) })),
     announcements: announcementSeeds.map(item => ({ ...item })),
     accounts: [
       { id: 'u1', role: 'user', name: '스마일 회원', email: 'user@smilepoint.kr', phone: '010-3070-1004', provider: 'email', status: 'active', createdAt: at(120), referral: 'SMILE3070',
@@ -96,7 +106,7 @@ export function freshState(now = new Date()) {
         notify: { email: true, sms: false, marketing: i % 2 === 0 },
       })),
     ],
-    transactions: [], tickets: [], notifications: [], audit: [], attendance: {}, apiLogs: [], webhooks: [],
+    transactions: [], tickets: [], notifications: [], audit: [], attendance: {}, apiLogs: [], webhooks: [], confirmations: [],
   };
   for (const account of state.accounts) {
     account.password = pw;
@@ -113,6 +123,7 @@ export function freshState(now = new Date()) {
   push({ userId: 'u1', type: 'coupon', product: 'coffee', points: 4500, status: 'complete', date: at(5, 13), coupon: { code: randomDigits(12), expires: at(-85), used: false, revealed: false } });
   push({ userId: 'u1', type: 'withdrawal', points: 8000, fee: 500, status: 'complete', date: at(4, 9), updated: at(3, 10), bank: '국민은행 ••••3070' });
   push({ userId: 'u1', type: 'coupon', product: 'market', points: 5000, status: 'complete', date: at(3, 19), coupon: { code: randomDigits(12), expires: at(-87), used: true, revealed: true } });
+  push({ userId: 'u1', type: 'charge', points: 10000, status: 'complete', method: 'card', date: at(2, 20), updated: at(2, 20), memo: '신용·체크카드 충전', pg: { provider: '모의 PG', ref: 'MOCK-PG-1' } });
   for (const d of [3, 2, 1]) push({ userId: 'u1', type: 'attendance', points: 10, status: 'complete', date: at(d, 8), memo: '출석체크' });
   push({ userId: 'u1', type: 'exchange', partner: 'green', source: 8000, points: 4000, rate: 2, status: 'pending', date: at(0, 10) });
   state.attendance.u1 = [3, 2, 1].map(d => kstDay(new Date(now.getTime() - d * day)));
@@ -167,6 +178,8 @@ export function freshState(now = new Date()) {
     delete link.balance;
   }
   for (const row of state.transactions) if (row.type === 'exchange') row.member = account(state, row.userId)?.links?.[row.partner]?.loginId;
+  // 처리 대기였던 샘플 교환은 새 방식(웹하드에서 넘어온 미확정 포인트)으로 둔다.
+  for (const row of state.transactions) if (row.type === 'exchange' && row.status === 'pending') Object.assign(row, { status: 'held', flow: 'push', transferId: 'WH-' + row.id.slice(3) });
   state.events = [{ id: 'e1', partner: 'disk', rate: 5, until: '2026-11-30', firstOnly: true, active: true, title: '디스크온 첫 교환 5% 추가 적립' }];
   return state;
 }
@@ -176,7 +189,7 @@ export function productionState({ adminEmail, adminName = '서비스 운영자',
   const fresh = freshState();
   return {
     version: 2, seq: 1000, settings: { ...fresh.settings, mockWebhardBalance: false, payoutMode: 'manual' }, session: null,
-    partners: [], products: [], announcements: [], events: [],
+    partners: [], products: [], announcements: [], events: [], confirmations: [],
     accounts: [{ id: 'a1', role: 'admin', name: adminName, email: adminEmail, phone: '', provider: 'email', status: 'active', createdAt: new Date().toISOString(), password: passwordHash, avatar: 0, photo: '' }],
     transactions: [], tickets: [], notifications: [], audit: [], attendance: {}, apiLogs: [], webhooks: [], webhardBalances: {}, resets: [], settlements: {},
   };
@@ -317,20 +330,29 @@ export function changePassword(state, id, before, after) {
 
 // ───────── 잔액·등급 ─────────
 export const direction = row => credits.has(row.type) || (row.type === 'adjust' && row.points > 0) ? 'in' : 'out';
+// available: 사용 가능 · pending: 적립 예정(보너스 대기 등) · reserved: 진행 중인 출금
+// unconfirmed: 웹하드에서 넘어온 미확정 포인트 · confirming: 확정 요청 후 웹하드 승인 대기
+// charged: 남은 충전 포인트(쿠폰·상품권 구매 전용) · withdrawable: 출금·선물 가능 = 사용 가능 − 남은 충전 포인트
 export function balances(state, userId) {
-  const totals = { available: 0, pending: 0, reserved: 0, earned: 0, spent: 0 };
+  const totals = { available: 0, pending: 0, reserved: 0, earned: 0, spent: 0, unconfirmed: 0, confirming: 0, charged: 0, withdrawable: 0 };
+  let chargeIn = 0, chargeUsed = 0;
   for (const row of state.transactions) {
     if (row.userId !== userId) continue;
     const amount = Math.abs(row.points);
     if (direction(row) === 'in') {
-      if (row.status === 'complete') { totals.available += amount; totals.earned += amount; }
-      if (row.status === 'pending') totals.pending += amount;
+      if (row.status === 'complete') { totals.available += amount; totals.earned += amount; if (row.type === 'charge') chargeIn += amount; }
+      if (row.status === 'pending' && row.type !== 'charge') totals.pending += amount; // 결제 진행 중인 충전은 적립 예정이 아니다
+      if (row.status === 'held') totals.unconfirmed += amount;
+      if (row.status === 'confirming') totals.confirming += amount;
     } else if (row.status === 'pending' || row.status === 'processing' || row.status === 'complete') {
       totals.available -= amount;
       if (row.status === 'complete') totals.spent += amount;
       else totals.reserved += amount; // 심사 대기·이체 중
+      if (row.type === 'coupon' && row.status === 'complete') chargeUsed += row.paid?.charge ?? 0;
     }
   }
+  totals.charged = Math.max(0, chargeIn - chargeUsed);
+  totals.withdrawable = Math.max(0, totals.available - totals.charged);
   return totals;
 }
 export function grade(state, userId) {
@@ -339,7 +361,14 @@ export function grade(state, userId) {
   const next = grades[index + 1];
   return { ...grades[index], exchanged, next, progress: next ? Math.min(100, Math.round((exchanged - grades[index].min) / (next.min - grades[index].min) * 100)) : 100 };
 }
-export const feeFor = (state, userId) => Math.round(state.settings.fee * grade(state, userId).feeRate);
+// 출금 수수료율(%, 부가세 포함). 등급 할인을 켜면 등급별 할인율을 곱한다.
+export function feeRateFor(state, userId) {
+  const rate = Number(state.settings.withdrawFeeRate ?? 0);
+  return state.settings.gradeFeeDiscount && userId ? Math.round(rate * grade(state, userId).feeRate * 100) / 100 : rate;
+}
+// 출금 금액에 대한 수수료(원 단위 반올림)
+export const feeFor = (state, userId, amount) => Math.round(Math.max(0, Number(amount) || 0) * feeRateFor(state, userId) / 100);
+export const percent = value => (Math.round(Number(value) * 100) / 100).toLocaleString('ko-KR', { maximumFractionDigits: 2 }) + '%';
 
 // ───────── 원장 기록 ─────────
 function record(state, details) {
@@ -424,6 +453,7 @@ export function confirmLink(state, userId, partnerId, code) {
 export function unlinkPartner(state, userId, partnerId) {
   const target = user(state, userId);
   if (state.transactions.some(row => row.userId === userId && row.partner === partnerId && row.status === 'pending')) fail('처리 대기 중인 교환이 있어 연결을 해제할 수 없습니다.');
+  if (state.transactions.some(row => row.userId === userId && row.partner === partnerId && row.status === 'confirming')) fail('웹하드 승인을 기다리는 확정 요청이 있어 연결을 해제할 수 없습니다.');
   const link = target.links[partnerId];
   delete target.links[partnerId];
   if (link?.verified) queueWebhook(state, partnerId, 'member.unlinked', { member: link.loginId });
@@ -445,7 +475,7 @@ export function partnerAvailable(state, userId, partnerId) {
   const base = state.webhardBalances?.[ledgerKey(partnerId, link.loginId)] ?? link.balance ?? 0;
   const member = link.loginId.toLowerCase();
   const used = state.transactions
-    .filter(row => row.type === 'exchange' && row.partner === partnerId && ['pending', 'complete'].includes(row.status) && !row.reversed && (row.member ? row.member.toLowerCase() === member : row.userId === userId))
+    .filter(row => row.type === 'exchange' && row.partner === partnerId && ['pending', 'complete', 'held', 'confirming'].includes(row.status) && !row.reversed && (row.member ? row.member.toLowerCase() === member : row.userId === userId))
     .reduce((sum, row) => sum + row.source, 0);
   return Math.max(0, base - used);
 }
@@ -453,6 +483,7 @@ export function exchange(state, userId, partnerId, amount) {
   user(state, userId);
   const partner = partnerOf(state, partnerId);
   if (!partner?.active) fail('현재 교환할 수 없는 제휴사입니다.');
+  if (partner.flow !== 'pull') fail(`${partner.name} 포인트는 ${partner.name} 사이트에서 스마일 포인트로 전환을 신청해 주세요. 넘어온 포인트는 포인트 교환 화면에서 확정할 수 있습니다.`);
   if (!account(state, userId).links[partnerId]?.verified) fail('먼저 웹하드 계정을 연결하고 인증을 완료해 주세요.');
   amount = int(amount);
   const available = partnerAvailable(state, userId, partnerId);
@@ -460,6 +491,220 @@ export function exchange(state, userId, partnerId, amount) {
   const row = record(state, { userId, type: 'exchange', partner: partnerId, member: account(state, userId).links[partnerId].loginId, source: amount, points: amount / partner.divisor, rate: partner.divisor, status: 'pending' });
   notify(state, 'partner:' + partnerId, `새 교환 신청이 접수되었습니다. (${amount.toLocaleString('ko-KR')} P)`, 'app/partner/requests');
   queueWebhook(state, partnerId, 'exchange.requested', { exchangeId: row.id, member: account(state, userId).links[partnerId].loginId, amount, points: row.points, rate: row.rate });
+  return row;
+}
+
+// ───────── 웹하드 포인트 전환 (웹하드 → 스마일 포인트) ─────────
+// 1) 회원이 웹하드에서 전환을 신청하면 웹하드가 수수료를 뺀 포인트를 API로 보낸다 → 미확정(held)으로 적립
+// 2) 회원이 [포인트 확정]을 누르면(전액 또는 일부) 웹하드에 사용 요청(웹훅 points.confirm_requested)을 보낸다 → 승인 대기(confirming)
+// 3) 웹하드가 사용 승인 API를 보내면 사용 가능 포인트(complete)가 된다 → 출금·쿠폰·상품권 구매 가능. 이 금액을 웹하드로부터 정산받는다.
+const heldRows = (state, userId, partnerId, status = 'held') => state.transactions
+  .filter(row => row.userId === userId && row.type === 'exchange' && row.partner === partnerId && row.status === status)
+  .sort((a, b) => a.date.localeCompare(b.date) || a.id.localeCompare(b.id, 'en', { numeric: true }));
+export const unconfirmedFor = (state, userId, partnerId) => heldRows(state, userId, partnerId).reduce((sum, row) => sum + row.points, 0);
+export const confirmingFor = (state, userId, partnerId) => heldRows(state, userId, partnerId, 'confirming').reduce((sum, row) => sum + row.points, 0);
+export const feePercent = partner => partner?.divisor ? Math.round((1 - 1 / partner.divisor) * 100) : 0;
+
+// 웹하드가 보낸 전환 1건을 받는다. transferId(웹하드 거래번호)가 같으면 다시 적립하지 않는다(재전송·중복 호출 방지).
+export function transferIn(state, partnerId, input = {}) {
+  const partner = partnerOf(state, partnerId) ?? fail('제휴사를 찾을 수 없습니다.', 404);
+  const transferId = String(input.transferId ?? '').trim();
+  if (!/^[\w.:-]{1,64}$/.test(transferId)) fail('transferId는 영문·숫자·_.:- 1~64자로 보내 주세요.', 400, { code: 'invalid_transfer_id' });
+  const existing = state.transactions.filter(row => row.type === 'exchange' && row.partner === partnerId && row.transferId === transferId);
+  if (existing.length) return { duplicate: true, transfer: transferView(state, partnerId, transferId) };
+  if (!partner.active) fail(`${partner.name} 연동이 일시 중지되어 있습니다.`, 409, { code: 'partner_inactive' });
+  const member = String(input.member ?? '').trim();
+  const source = int(Number(input.source));
+  const points = int(Number(input.points));
+  if (!(source >= 1 && source <= 100000000) || !(points >= 1 && points <= source && points <= 10000000)) fail('source(웹하드 차감 포인트)와 points(수수료를 뺀 전환 포인트)를 1 이상의 정수로, points ≤ source로 보내 주세요.', 400, { code: 'invalid_amount' });
+  const owner = member && verifiedOwner(state, partnerId, member, null);
+  if (!owner) fail(`스마일 포인트에 ${partner.name} 계정을 연결한 회원이 아닙니다. 회원이 먼저 계정 연결을 마쳐야 합니다.`, 404, { code: 'member_not_linked' });
+  if (owner.status !== 'active') fail('이용이 정지되었거나 탈퇴한 회원입니다.', 409, { code: 'member_unavailable' });
+  const rate = Math.round(source / points * 100) / 100;
+  const row = record(state, { userId: owner.id, type: 'exchange', flow: 'push', partner: partnerId, member: owner.links[partnerId].loginId, transferId, source, points, rate, status: 'held',
+    ...(input.memo ? { memo: clip(input.memo, 40) } : {}) });
+  notify(state, owner.id, `${partner.name}에서 ${points.toLocaleString('ko-KR')} P가 넘어왔어요. [포인트 확정]을 누르면 출금·쇼핑에 사용할 수 있습니다.`, 'app/user/exchange');
+  return { duplicate: false, transfer: transferView(state, partnerId, transferId), row };
+}
+// 웹하드 거래번호 기준 요약 (확정 요청으로 나뉜 경우 합쳐서 보여 준다)
+export function transferView(state, partnerId, transferId) {
+  const rows = state.transactions.filter(row => row.type === 'exchange' && row.partner === partnerId && row.transferId === transferId);
+  if (!rows.length) return null;
+  const sum = status => rows.filter(row => row.status === status).reduce((s, row) => s + row.points, 0);
+  const first = rows.reduce((a, b) => (a.date <= b.date ? a : b));
+  return { transferId, member: first.member ?? null, source: rows.reduce((s, r) => s + r.source, 0), points: rows.reduce((s, r) => s + r.points, 0), receivedAt: first.date,
+    unconfirmed: sum('held'), confirming: sum('confirming'), confirmed: sum('complete'), canceled: sum('canceled'),
+    status: sum('held') ? 'unconfirmed' : sum('confirming') ? 'confirming' : sum('complete') ? 'confirmed' : 'canceled' };
+}
+// 확정할 만큼만 떼어 낸다: 원래 행은 남은 미확정 포인트로 줄이고, 떼어 낸 부분을 새 행으로 만든다.
+function splitRow(state, row, points) {
+  const source = Math.round(row.source * points / row.points);
+  const piece = { ...row, id: nextId(state), points, source, splitFrom: row.splitFrom ?? row.id };
+  row.points -= points;
+  row.source -= source;
+  state.transactions.splice(state.transactions.indexOf(row), 0, piece);
+  return piece;
+}
+// 회원의 포인트 확정(전액 또는 일부). 출금 신청·쿠폰/상품권 구매 전에 이 단계를 거쳐야 사용 가능 포인트가 된다.
+export function requestConfirm(state, userId, partnerId, amount) {
+  user(state, userId);
+  const partner = partnerOf(state, partnerId) ?? fail('제휴사를 찾을 수 없습니다.');
+  if (!partner.active) fail(`${partner.name} 연동 점검 중이라 지금은 확정할 수 없습니다. 잠시 뒤 다시 시도해 주세요.`);
+  const held = heldRows(state, userId, partnerId);
+  const total = held.reduce((sum, row) => sum + row.points, 0);
+  amount = int(Number(amount));
+  if (!total) fail(`${partner.name}에서 넘어온 미확정 포인트가 없습니다.`);
+  if (!(amount >= 1 && amount <= total)) fail(`확정할 포인트를 1 P 이상, 미확정 포인트(${total.toLocaleString('ko-KR')} P) 이내로 입력해 주세요.`);
+  const id = nextId(state, 'CF');
+  const now = new Date().toISOString();
+  const pieces = [];
+  let left = amount;
+  for (const row of held) {
+    if (!left) break;
+    const piece = row.points > left ? splitRow(state, row, left) : row;
+    Object.assign(piece, { status: 'confirming', confirmId: id, updated: now });
+    left -= piece.points;
+    pieces.push(piece);
+  }
+  const confirmation = { id, userId, partner: partnerId, member: pieces[0].member ?? account(state, userId).links?.[partnerId]?.loginId ?? null, points: amount, source: pieces.reduce((s, r) => s + r.source, 0),
+    rows: pieces.map(row => row.id), transfers: pieces.map(row => ({ transferId: row.transferId ?? row.id, points: row.points, source: row.source })), status: 'pending', date: now };
+  (state.confirmations ??= []).unshift(confirmation);
+  queueWebhook(state, partnerId, 'points.confirm_requested', { confirmationId: id, member: confirmation.member, points: amount, source: confirmation.source, transfers: confirmation.transfers, requestedAt: now });
+  notify(state, 'partner:' + partnerId, `포인트 사용 승인 요청 ${amount.toLocaleString('ko-KR')} P (${confirmation.member ?? ''})`, 'app/partner/confirms');
+  return confirmation;
+}
+// 미확정 포인트가 있는 모든 웹하드를 한 번에 전액 확정한다.
+export function requestConfirmAll(state, userId) {
+  user(state, userId);
+  const list = state.partners.filter(partner => partner.active && unconfirmedFor(state, userId, partner.id) > 0);
+  if (!list.length) fail('확정할 미확정 포인트가 없습니다.');
+  return list.map(partner => requestConfirm(state, userId, partner.id, unconfirmedFor(state, userId, partner.id)));
+}
+const confirmationOf = (state, actorId, id) => {
+  const actor = account(state, actorId);
+  const item = (state.confirmations ?? []).find(entry => entry.id === id);
+  if (!item || !actor || !(actor.role === 'admin' || (actor.role === 'partner' && actor.partnerId === item.partner))) fail('확정 요청을 찾을 수 없습니다.', 404);
+  return { actor, item };
+};
+// 웹하드의 사용 승인: 승인 대기 포인트를 사용 가능 포인트로 바꾼다. 같은 요청을 다시 승인하면 결과만 돌려준다(멱등).
+export function approveConfirm(state, actorId, id) {
+  const { actor, item } = confirmationOf(state, actorId, id);
+  if (item.status === 'approved') return item;
+  if (item.status !== 'pending') fail('이미 거절된 확정 요청입니다.', 409);
+  const now = new Date().toISOString();
+  const owner = account(state, item.userId);
+  const rows = item.rows.map(rowId => state.transactions.find(row => row.id === rowId)).filter(Boolean);
+  for (const row of rows) {
+    Object.assign(row, { status: 'complete', updated: now, handler: actorId });
+    afterExchange(state, row, owner); // 첫 교환 보너스·추천 보너스·교환 이벤트
+  }
+  Object.assign(item, { status: 'approved', updated: now, by: actorId });
+  const partner = partnerOf(state, item.partner);
+  notify(state, item.userId, `${partner?.name ?? ''} 포인트 ${item.points.toLocaleString('ko-KR')} P가 확정되었어요. 이제 출금·쿠폰·상품권 구매에 사용할 수 있습니다.`, 'app/user/overview');
+  log(state, actorId, '포인트 확정 승인', item.id, `${owner?.name ?? ''} · ${partner?.name ?? ''} · ${item.points.toLocaleString('ko-KR')} P${actor.role === 'admin' ? ' · 운영팀 처리' : ''}`);
+  if (actor.role === 'admin') queueWebhook(state, item.partner, 'points.confirm_approved', { confirmationId: item.id, member: item.member, points: item.points, by: 'admin' });
+  return item;
+}
+// 웹하드의 사용 거절: 포인트를 다시 미확정으로 돌려 회원이 다시 확정할 수 있게 한다.
+export function rejectConfirm(state, actorId, id, reason = '') {
+  const { actor, item } = confirmationOf(state, actorId, id);
+  if (item.status !== 'pending') fail('이미 처리된 확정 요청입니다.', 409);
+  reason = clip(reason, 100);
+  if (!reason && actor.role === 'admin') fail('거절 사유를 입력해 주세요.');
+  reason ||= '웹하드에서 사용 승인이 거절되었습니다.';
+  const now = new Date().toISOString();
+  for (const rowId of item.rows) {
+    const row = state.transactions.find(entry => entry.id === rowId);
+    if (row?.status === 'confirming') { Object.assign(row, { status: 'held', updated: now }); delete row.confirmId; }
+  }
+  Object.assign(item, { status: 'rejected', updated: now, by: actorId, reason });
+  const partner = partnerOf(state, item.partner);
+  notify(state, item.userId, `${partner?.name ?? ''} 포인트 확정 ${item.points.toLocaleString('ko-KR')} P가 승인되지 않아 미확정으로 돌아왔어요. 사유: ${reason}`, 'app/user/exchange');
+  log(state, actorId, '포인트 확정 거절', item.id, `${account(state, item.userId)?.name ?? ''} · ${partner?.name ?? ''} · ${item.points.toLocaleString('ko-KR')} P · ${reason}`);
+  if (actor.role === 'admin') queueWebhook(state, item.partner, 'points.confirm_rejected', { confirmationId: item.id, member: item.member, points: item.points, by: 'admin', reason });
+  return item;
+}
+// 웹하드의 전환 취소: 아직 확정하지 않은 미확정 포인트만 취소할 수 있다.
+export function cancelTransfer(state, actorId, transferId, reason = '') {
+  const actor = account(state, actorId);
+  if (actor?.role !== 'partner' && actor?.role !== 'admin') fail('권한이 없습니다.', 403);
+  const rows = state.transactions.filter(row => row.type === 'exchange' && row.transferId === String(transferId) && (actor.role === 'admin' || row.partner === actor.partnerId));
+  if (!rows.length) fail('전환 건을 찾을 수 없습니다.', 404);
+  const held = rows.filter(row => row.status === 'held');
+  if (!held.length) fail('확정 요청 중이거나 확정된 포인트는 취소할 수 없습니다.', 409);
+  reason = clip(reason, 100) || '웹하드 전환 취소';
+  const now = new Date().toISOString();
+  for (const row of held) Object.assign(row, { status: 'canceled', updated: now, handler: actorId, reason });
+  const points = held.reduce((s, r) => s + r.points, 0);
+  const partner = partnerOf(state, rows[0].partner);
+  notify(state, rows[0].userId, `${partner?.name ?? ''}에서 넘어온 미확정 포인트 ${points.toLocaleString('ko-KR')} P가 취소되었습니다. 사유: ${reason}`, 'app/user/exchange');
+  log(state, actorId, '전환 취소', String(transferId), `${account(state, rows[0].userId)?.name ?? ''} · ${points.toLocaleString('ko-KR')} P · ${reason}`);
+  return transferView(state, rows[0].partner, String(transferId));
+}
+// 데모: 회원이 웹하드에서 전환을 신청한 것처럼 웹하드 API 호출을 흉내 낸다. (운영 환경에서는 사용할 수 없음)
+export function simulateTransfer(state, userId, partnerId, amount) {
+  user(state, userId);
+  const partner = partnerOf(state, partnerId);
+  if (!partner?.active) fail('현재 전환할 수 없는 제휴사입니다.');
+  if (!account(state, userId).links[partnerId]?.verified) fail('먼저 웹하드 계정을 연결하고 인증을 완료해 주세요.');
+  amount = int(Number(amount));
+  const available = partnerAvailable(state, userId, partnerId);
+  if (!(amount >= partner.min) || (available !== null && amount > available) || amount % partner.divisor || amount > 10000000) fail('웹하드 보유 포인트, 최소 금액과 전환 단위를 확인해 주세요.');
+  return transferIn(state, partnerId, { transferId: 'DEMO-' + Date.now().toString(36) + randomChars('ABCDEFGHJKLMNPQRSTUVWXYZ23456789', 4), member: account(state, userId).links[partnerId].loginId, source: amount, points: amount / partner.divisor }).row;
+}
+// 데모: 자동 승인으로 설정된 웹하드의 사용 승인을 흉내 낸다 (실제로는 웹하드 서버가 승인 API를 호출).
+export const mockConfirmQueue = state => state.settings.mockWebhardBalance ? (state.confirmations ?? []).filter(item => item.status === 'pending' && partnerOf(state, item.partner)?.demoAutoApprove) : [];
+export function runMockConfirms(state) {
+  const list = mockConfirmQueue(state);
+  for (const item of list) {
+    const manager = state.accounts.find(entry => entry.role === 'partner' && entry.partnerId === item.partner && entry.status === 'active') ?? state.accounts.find(entry => entry.role === 'admin');
+    if (manager) approveConfirm(state, manager.id, item.id);
+  }
+  return list.length;
+}
+
+// ───────── 포인트 충전 (신용카드 등) ─────────
+// 충전 포인트는 쿠폰·상품권 구매에만 사용하고 현금 출금·선물은 할 수 없다. 구매할 때 충전 포인트부터 차감한다.
+export function chargedToday(state, userId) {
+  const today = kstDay();
+  return state.transactions.filter(row => row.userId === userId && row.type === 'charge' && ['pending', 'complete'].includes(row.status) && kstDay(row.date) === today).reduce((sum, row) => sum + row.points, 0);
+}
+export function startCharge(state, userId, amount, method = 'card') {
+  user(state, userId);
+  const s = state.settings;
+  if (!s.chargeEnabled) fail('지금은 포인트 충전을 이용할 수 없습니다.');
+  if (!chargeMethods[method]) fail('결제 수단을 선택해 주세요.');
+  amount = int(Number(amount));
+  if (!(amount >= s.chargeMinimum && amount <= s.chargeMaximum)) fail(`충전은 1회 ${s.chargeMinimum.toLocaleString('ko-KR')} ~ ${s.chargeMaximum.toLocaleString('ko-KR')} P 사이로 할 수 있습니다.`);
+  if (amount % 100) fail('충전 금액은 100 P 단위로 입력해 주세요.');
+  if (chargedToday(state, userId) + amount > s.dailyChargeLimit) fail(`하루 충전 한도(${s.dailyChargeLimit.toLocaleString('ko-KR')} P)를 넘었습니다.`);
+  return record(state, { userId, type: 'charge', points: amount, status: 'pending', method, memo: chargeMethods[method] + ' 충전' });
+}
+const pendingCharge = (state, id) => state.transactions.find(row => row.id === id && row.type === 'charge' && row.status === 'pending') ?? fail('결제 대기 중인 충전을 찾을 수 없습니다.', 404);
+// PG 결제 승인 결과가 확인되면 호출한다 (데모는 모의 PG가 바로 승인).
+export function completeCharge(state, id, { ref = '', provider = '' } = {}) {
+  const row = pendingCharge(state, id);
+  const now = new Date().toISOString();
+  Object.assign(row, { status: 'complete', updated: now, pg: { provider: String(provider).slice(0, 30), ref: String(ref).slice(0, 80), paidAt: now } });
+  notify(state, row.userId, `${row.points.toLocaleString('ko-KR')} P를 충전했어요. 쿠폰·상품권 구매에 사용할 수 있습니다.`, 'app/user/charge');
+  return row;
+}
+export function failCharge(state, id, error = '') {
+  const row = pendingCharge(state, id);
+  Object.assign(row, { status: 'canceled', updated: new Date().toISOString(), reason: clip(error, 100) || '결제 실패' });
+  return row;
+}
+// 관리자 충전 취소: 아직 쓰지 않은 충전 포인트만 취소한다 (카드 결제 취소는 PG 관리자 화면에서 함께 진행).
+export function cancelCharge(state, adminId, id, reason) {
+  admin(state, adminId);
+  const row = state.transactions.find(item => item.id === id && item.type === 'charge') ?? fail('충전 건을 찾을 수 없습니다.', 404);
+  if (row.status !== 'complete') fail('완료된 충전만 취소할 수 있습니다.');
+  reason = clip(reason, 100);
+  if (!reason) fail('취소 사유를 입력해 주세요.');
+  if (balances(state, row.userId).charged < row.points) fail('이미 사용한 충전 포인트가 있어 전액 취소할 수 없습니다.');
+  Object.assign(row, { status: 'canceled', updated: new Date().toISOString(), handler: adminId, reason });
+  notify(state, row.userId, `충전 ${row.points.toLocaleString('ko-KR')} P가 취소되었습니다. 결제 취소는 카드사 사정에 따라 3~7영업일이 걸릴 수 있습니다. 사유: ${reason}`, 'app/user/charge');
+  log(state, adminId, '충전 취소', row.id, `${account(state, row.userId)?.name ?? ''} · ${row.points.toLocaleString('ko-KR')} P · ${reason}`);
   return row;
 }
 
@@ -527,11 +772,16 @@ export function withdrawnToday(state, userId) {
 export function withdraw(state, userId, amount) {
   const target = user(state, userId);
   if (!target.bank?.verified) fail('본인 명의 출금 계좌를 먼저 등록해 주세요.');
-  amount = int(amount);
-  const fee = feeFor(state, userId);
-  if (!(amount >= state.settings.withdrawalMinimum) || amount > balances(state, userId).available || amount <= fee) fail('최소 출금액과 사용 가능 잔액을 확인해 주세요.');
+  amount = int(Number(amount));
+  const bal = balances(state, userId);
+  const fee = feeFor(state, userId, amount);
+  if (!(amount >= state.settings.withdrawalMinimum)) fail(`최소 ${state.settings.withdrawalMinimum.toLocaleString('ko-KR')} P부터 출금할 수 있습니다.`);
+  if (amount > bal.available) fail('사용 가능 포인트가 부족합니다.');
+  // 신용카드 등으로 충전한 포인트는 현금으로 출금할 수 없다.
+  if (amount > bal.withdrawable) fail(`충전한 포인트는 출금할 수 없어요. 출금 가능 포인트는 ${bal.withdrawable.toLocaleString('ko-KR')} P입니다.`);
+  if (amount <= fee) fail('출금액은 수수료보다 커야 합니다.');
   if (withdrawnToday(state, userId) + amount > state.settings.dailyWithdrawLimit) fail('일일 출금 한도를 초과했습니다.');
-  const row = record(state, { userId, type: 'withdrawal', points: amount, fee, status: 'pending', bank: target.bank.bank + ' ••••' + target.bank.number.slice(-4) });
+  const row = record(state, { userId, type: 'withdrawal', points: amount, fee, feeRate: feeRateFor(state, userId), status: 'pending', bank: target.bank.bank + ' ••••' + target.bank.number.slice(-4) });
   // 지급대행 연동 + 자동 승인 한도 이내면 심사 없이 바로 이체를 요청한다.
   const auto = state.settings.payoutMode === 'api' && state.settings.payoutAutoLimit > 0 && amount <= state.settings.payoutAutoLimit;
   if (auto) startPayout(row, 'auto');
@@ -641,11 +891,17 @@ export function order(state, userId, productId, quantity = 1) {
   if (!product?.active) fail('판매 중인 상품이 아닙니다.');
   if (!(quantity >= 1 && quantity <= 5)) fail('수량은 1~5개로 선택해 주세요.');
   if (product.stock < quantity) fail('재고가 부족합니다.');
-  if (product.cost * quantity > balances(state, userId).available) fail('사용 가능 포인트가 부족합니다.');
+  const bal = balances(state, userId);
+  if (product.cost * quantity > bal.available) fail('사용 가능 포인트가 부족합니다.');
   product.stock -= quantity;
   const rows = [];
+  // 충전 포인트를 먼저 사용한다 (출금 가능한 포인트를 최대한 남긴다).
+  let chargeLeft = bal.charged;
   for (let i = 0; i < quantity; i++) {
+    const fromCharge = Math.min(chargeLeft, product.cost);
+    chargeLeft -= fromCharge;
     rows.push(record(state, { userId, type: 'coupon', product: productId, points: product.cost, status: 'complete',
+      paid: { charge: fromCharge, point: product.cost - fromCharge }, supply: product.supplyPrice ?? null,
       coupon: { code: randomDigits(12), expires: new Date(Date.now() + 90 * day).toISOString(), used: false, revealed: false } }));
   }
   return rows;
@@ -694,8 +950,9 @@ export function gift(state, userId, email, amount, message = '') {
   amount = int(amount);
   // 받는 분이 없거나 받을 수 없는 계정이면 같은 문구로 안내한다 (가입 여부 노출 방지).
   if (!receiver || receiver.role !== 'user' || receiver.status !== 'active' || receiver.id === userId) fail('선물할 수 없는 이메일입니다. 받는 분의 가입 이메일을 확인해 주세요.');
-  if (!state.transactions.some(row => row.userId === userId && row.type === 'exchange' && row.status === 'complete')) fail('포인트 교환을 1회 이상 완료한 뒤 선물할 수 있습니다.');
+  if (!state.transactions.some(row => row.userId === userId && row.type === 'exchange' && row.status === 'complete')) fail('포인트 교환을 1회 이상 완료(확정)한 뒤 선물할 수 있습니다.');
   if (!(amount >= state.settings.giftMinimum) || amount > balances(state, userId).available) fail(`선물은 ${state.settings.giftMinimum.toLocaleString('ko-KR')} P 이상, 사용 가능 포인트 이내로 보낼 수 있습니다.`);
+  if (amount > balances(state, userId).withdrawable) fail('충전한 포인트는 선물할 수 없어요. 쿠폰·상품권 구매에 사용해 주세요.');
   if (giftedToday(state, userId) + amount > (state.settings.dailyGiftLimit ?? 100000)) fail('오늘 선물 한도를 넘었습니다.');
   const memo = String(message).trim().slice(0, 40);
   const row = record(state, { userId, type: 'gift_out', points: amount, status: 'complete', counterpart: receiver.id, memo });
@@ -815,7 +1072,7 @@ export function setMemberStatus(state, adminId, userId, status) {
   target.status = status;
   log(state, adminId, status === 'active' ? '이용 정지 해제' : '이용 정지', userId, target.name);
 }
-export function updatePartner(state, adminId, partnerId, { divisor, min, active, dailyLimit, reviewOver }) {
+export function updatePartner(state, adminId, partnerId, { divisor, min, active, dailyLimit, reviewOver, flow, demoAutoApprove }) {
   admin(state, adminId);
   const partner = partnerOf(state, partnerId) ?? fail('제휴사를 찾을 수 없습니다.');
   divisor = int(Number(divisor)); min = int(Number(min));
@@ -826,31 +1083,49 @@ export function updatePartner(state, adminId, partnerId, { divisor, min, active,
   if (!(dailyLimit >= 0 && dailyLimit <= 1e9) || !(reviewOver >= 0 && reviewOver <= 1e9)) fail('일일 승인 한도와 2차 승인 기준은 0 이상의 정수로 입력해 주세요. (0은 제한 없음)');
   const before = `${partner.divisor}:1 · 최소 ${partner.min}`;
   Object.assign(partner, { divisor, min, active: !!active, dailyLimit, reviewOver });
-  log(state, adminId, '제휴사 정책 변경', partner.name, `${before} → ${divisor}:1 · 최소 ${min} · 일일 한도 ${dailyLimit || '없음'} · 2차 승인 ${reviewOver ? reviewOver + ' P 초과' : '없음'} · ${active ? '운영' : '중지'}`);
+  if (['push', 'pull'].includes(flow)) partner.flow = flow;
+  if (demoAutoApprove !== undefined) partner.demoAutoApprove = !!demoAutoApprove;
+  log(state, adminId, '제휴사 정책 변경', partner.name, `${before} → ${divisor}:1 · 최소 ${min} · 일일 한도 ${dailyLimit || '없음'} · 2차 승인 ${reviewOver ? reviewOver + ' P 초과' : '없음'} · ${partner.flow === 'pull' ? '스마일 신청 방식' : '웹하드 전환 방식'} · ${active ? '운영' : '중지'}`);
 }
-export function updateProduct(state, adminId, productId, { cost, stock, active }) {
+const supplyOf = (value, cost) => {
+  if (value === undefined || value === '' || value === null) return undefined;
+  const supply = int(Number(value));
+  if (!(supply >= 0 && supply <= cost)) fail('공급가는 0 이상, 판매 포인트 이하로 입력해 주세요.');
+  return supply;
+};
+export function updateProduct(state, adminId, productId, { cost, stock, active, supplyPrice }) {
   admin(state, adminId);
   const product = state.products.find(item => item.id === productId) ?? fail('상품을 찾을 수 없습니다.');
   cost = int(cost); stock = int(stock);
   if (!(cost >= 100 && cost <= 10000000) || !(stock >= 0 && stock <= 1000000)) fail('판매 포인트와 재고를 확인해 주세요.');
-  Object.assign(product, { cost, stock, active: !!active });
-  log(state, adminId, '상품 수정', product.name, `${cost.toLocaleString('ko-KR')} P · 재고 ${stock} · ${active ? '판매' : '중지'}`);
+  const supply = supplyOf(supplyPrice, cost) ?? Math.min(product.supplyPrice ?? defaultSupply(cost), cost);
+  Object.assign(product, { cost, stock, active: !!active, supplyPrice: supply });
+  log(state, adminId, '상품 수정', product.name, `${cost.toLocaleString('ko-KR')} P · 공급가 ${supply.toLocaleString('ko-KR')}원 · 재고 ${stock} · ${active ? '판매' : '중지'}`);
 }
 export function updateSettings(state, adminId, input) {
   admin(state, adminId);
   const next = { ...state.settings };
-  for (const key of ['fee', 'withdrawalMinimum', 'dailyWithdrawLimit', 'attendancePoints', 'attendanceBonus', 'signupBonus', 'referralBonus', 'giftMinimum', 'dailyGiftLimit', 'payoutAutoLimit']) {
-    if (input[key] === undefined) continue;
+  for (const key of ['fee', 'withdrawalMinimum', 'dailyWithdrawLimit', 'attendancePoints', 'attendanceBonus', 'signupBonus', 'referralBonus', 'giftMinimum', 'dailyGiftLimit', 'payoutAutoLimit', 'chargeMinimum', 'chargeMaximum', 'dailyChargeLimit']) {
+    if (input[key] === undefined || input[key] === '') continue;
     const value = int(Number(input[key]));
     if (!(value >= 0 && value <= 100000000)) fail('설정값은 0 이상 1억 이하의 정수여야 합니다.');
     next[key] = value;
   }
-  if (next.withdrawalMinimum <= next.fee) fail('최소 출금액은 수수료보다 커야 합니다.');
+  if (input.withdrawFeeRate !== undefined && input.withdrawFeeRate !== '') {
+    const rate = Number(input.withdrawFeeRate);
+    if (!Number.isFinite(rate) || rate < 0 || rate > 30) fail('출금 수수료율은 0~30% 사이로 입력해 주세요.');
+    next.withdrawFeeRate = Math.round(rate * 100) / 100;
+  }
+  if (!(next.withdrawalMinimum >= 1)) fail('최소 출금 금액은 1 P 이상이어야 합니다.');
+  if (Math.round(next.withdrawalMinimum * next.withdrawFeeRate / 100) >= next.withdrawalMinimum) fail('최소 출금액은 수수료보다 커야 합니다.');
   if (next.dailyGiftLimit < next.giftMinimum) fail('하루 선물 한도는 최소 선물 금액 이상이어야 합니다.');
+  if (!(next.chargeMinimum >= 100) || next.chargeMaximum < next.chargeMinimum || next.dailyChargeLimit < next.chargeMaximum) fail('충전 금액은 최소 100 P 이상, 최소 ≤ 1회 최대 ≤ 하루 한도 순서로 입력해 주세요.');
   if (input.maintenance !== undefined) next.maintenance = !!input.maintenance;
+  if (input.gradeFeeDiscount !== undefined) next.gradeFeeDiscount = !!input.gradeFeeDiscount;
+  if (input.chargeEnabled !== undefined) next.chargeEnabled = !!input.chargeEnabled;
   if (['manual', 'api'].includes(input.payoutMode)) next.payoutMode = input.payoutMode;
   state.settings = next;
-  log(state, adminId, '설정 변경', '운영 설정', `수수료 ${next.fee} P · 최소 출금 ${next.withdrawalMinimum} P · 출석 ${next.attendancePoints} P · 선물 한도 ${next.dailyGiftLimit} P · 지급 ${next.payoutMode === 'api' ? '지급대행 API' + (next.payoutAutoLimit ? ` (자동 승인 ${next.payoutAutoLimit.toLocaleString('ko-KR')} P 이하)` : '') : '수동'}${next.maintenance ? ' · 점검 모드' : ''}`);
+  log(state, adminId, '설정 변경', '운영 설정', `출금 수수료 ${percent(next.withdrawFeeRate)}(부가세 포함)${next.gradeFeeDiscount ? ' · 등급 할인' : ''} · 최소 출금 ${next.withdrawalMinimum.toLocaleString('ko-KR')} P · 충전 ${next.chargeEnabled ? `${next.chargeMinimum.toLocaleString('ko-KR')}~${next.chargeMaximum.toLocaleString('ko-KR')} P` : '중지'} · 출석 ${next.attendancePoints} P · 선물 한도 ${next.dailyGiftLimit} P · 지급 ${next.payoutMode === 'api' ? '지급대행 API' + (next.payoutAutoLimit ? ` (자동 승인 ${next.payoutAutoLimit.toLocaleString('ko-KR')} P 이하)` : '') : '수동'}${next.maintenance ? ' · 점검 모드' : ''}`);
 }
 export function addAnnouncement(state, adminId, { title, body, pinned }) {
   admin(state, adminId);
@@ -993,21 +1268,21 @@ export function createPartner(state, adminId, { name, type, divisor, min, approv
   const colors = ['green', 'blue', 'peach', 'violet'];
   const id = 'w' + Date.now().toString(36);
   const partner = { id, name, initials: name[0], color: colors[state.partners.length % colors.length], type: String(type || '판매 적립').slice(0, 20), divisor, min, approval: String(approval || '평균 1일').slice(0, 20), active: false,
-    apiKey: newApiKey(), webhook: '', ip: '', dailyLimit: 1000000, reviewOver: 100000 };
+    apiKey: newApiKey(), webhook: '', ip: '', dailyLimit: 1000000, reviewOver: 100000, flow: 'push', demoAutoApprove: false };
   state.partners.push(partner);
   log(state, adminId, '제휴사 등록', name, `${divisor}:1 · 최소 ${min} · 등록 직후 일시 중지 상태`);
   return partner;
 }
-export function createProduct(state, adminId, { name, brand, category, cost, stock }) {
+export function createProduct(state, adminId, { name, brand, category, cost, stock, supplyPrice }) {
   admin(state, adminId);
   name = String(name ?? '').trim(); brand = String(brand ?? '').trim();
   cost = int(Number(cost)); stock = int(Number(stock));
   if (!name || name.length > 40 || !brand || brand.length > 20) fail('상품명(40자)과 브랜드(20자)를 입력해 주세요.');
   if (!['카페', '외식', '편의점', '디저트', '문화', '상품권'].includes(category)) fail('분류를 선택해 주세요.');
   if (!(cost >= 100) || !(stock >= 0)) fail('판매 포인트와 재고를 확인해 주세요.');
-  const product = { id: 'g' + Date.now().toString(36), name, brand, category, cost, stock, active: true };
+  const product = { id: 'g' + Date.now().toString(36), name, brand, category, cost, stock, active: true, supplyPrice: supplyOf(supplyPrice, cost) ?? defaultSupply(cost) };
   state.products.push(product);
-  log(state, adminId, '상품 등록', name, `${cost.toLocaleString('ko-KR')} P · 재고 ${stock}`);
+  log(state, adminId, '상품 등록', name, `${cost.toLocaleString('ko-KR')} P · 공급가 ${product.supplyPrice.toLocaleString('ko-KR')}원 · 재고 ${stock}`);
   return product;
 }
 
@@ -1059,7 +1334,7 @@ export function snapshot(state, viewer) {
     announcements: state.announcements.filter(item => viewer?.role === 'admin' || item.visible),
     stats: publicStats(state), session: viewer ? { accountId: viewer.id } : null,
     partners: state.partners.map(publicPartner), accounts: [], transactions: [], tickets: [], notifications: [], audit: [], attendance: {}, apiLogs: [], webhooks: [],
-    events: viewer?.role === 'admin' ? (state.events ?? []) : activeEvents(state), settlements: {},
+    events: viewer?.role === 'admin' ? (state.events ?? []) : activeEvents(state), settlements: {}, confirmations: [],
   };
   if (!viewer) return base;
   const mine = notificationsFor(state, viewer);
@@ -1074,13 +1349,13 @@ export function snapshot(state, viewer) {
     return { ...base, partners: state.partners.map(p => p.id === viewer.partnerId ? p : publicPartner(p)),
       accounts: [privateAccount(viewer), ...state.accounts.filter(a => ids.has(a.id)).map(partnerBrief)], transactions: rows, notifications: mine,
       apiLogs: (state.apiLogs ?? []).filter(item => item.partner === viewer.partnerId).slice(0, 100), webhooks: (state.webhooks ?? []).filter(item => item.partner === viewer.partnerId).slice(0, 50),
-      linkRequests: linkRequests(state, viewer.partnerId),
+      linkRequests: linkRequests(state, viewer.partnerId), confirmations: (state.confirmations ?? []).filter(item => item.partner === viewer.partnerId),
       settlements: Object.fromEntries(Object.entries(state.settlements ?? {}).filter(([key]) => key.startsWith(viewer.partnerId + ':'))) };
   }
   const rows = state.transactions.filter(row => row.userId === viewer.id);
   const others = new Set(rows.map(row => row.counterpart).filter(Boolean));
   return { ...base, accounts: [privateAccount(viewer), ...state.accounts.filter(a => others.has(a.id)).map(brief)], transactions: rows.map(hideCode),
-    tickets: state.tickets.filter(item => item.userId === viewer.id), notifications: mine, attendance: { [viewer.id]: state.attendance[viewer.id] ?? [] },
+    tickets: state.tickets.filter(item => item.userId === viewer.id), notifications: mine, confirmations: (state.confirmations ?? []).filter(item => item.userId === viewer.id), attendance: { [viewer.id]: state.attendance[viewer.id] ?? [] },
     available: Object.fromEntries(Object.keys(viewer.links ?? {}).map(id => [id, partnerAvailable(state, viewer.id, id)])) };
 }
 
@@ -1301,6 +1576,7 @@ export function deleteAccount(state, userId, { password, confirm } = {}) {
   const target = user(state, userId);
   if (target.password ? !security.verify(String(password ?? ''), target.password) : String(confirm ?? '').trim() !== '탈퇴') fail(target.password ? '비밀번호가 일치하지 않습니다.' : "확인을 위해 '탈퇴'를 입력해 주세요.");
   if (state.transactions.some(row => row.userId === userId && ['pending', 'processing'].includes(row.status) && ['exchange', 'withdrawal'].includes(row.type))) fail('처리 중인 교환·출금이 있어 탈퇴할 수 없습니다. 처리가 끝난 뒤 다시 시도해 주세요.');
+  if (state.transactions.some(row => row.userId === userId && row.type === 'exchange' && ['held', 'confirming'].includes(row.status))) fail('웹하드에서 넘어온 미확정 포인트가 있어 탈퇴할 수 없습니다. 포인트를 확정해 사용하거나 고객센터로 문의해 주세요.');
   const left = Math.max(0, balances(state, userId).available);
   for (const [partnerId, link] of Object.entries(target.links ?? {})) if (link.verified) queueWebhook(state, partnerId, 'member.unlinked', { member: link.loginId });
   for (const row of state.transactions) if (row.userId === userId && row.hold && row.status === 'pending') row.status = 'canceled';
@@ -1319,13 +1595,18 @@ export function normalize(state, demo = true) {
   state.settings.mockWebhardBalance ??= demo;
   state.settings.payoutMode ??= demo ? 'api' : 'manual';
   state.settings.payoutAutoLimit ??= 0;
+  // 이전 버전(건당 고정 수수료) 데이터는 처음 한 번 새 출금 정책(수수료 5.5%, 최소 1만 P)으로 바꾼다.
+  if (state.settings.withdrawFeeRate === undefined) Object.assign(state.settings, feeDefaults);
+  state.settings = { ...feeDefaults, ...chargeDefaults, ...state.settings };
+  state.confirmations ??= [];
+  for (const product of state.products ?? []) product.supplyPrice ??= defaultSupply(product.cost);
   state.events ??= [];
   state.webhardBalances ??= {};
   state.resets ??= [];
   state.settlements ??= {};
   state.apiLogs ??= [];
   state.webhooks ??= [];
-  for (const partner of state.partners ?? []) { partner.dailyLimit ??= 1000000; partner.reviewOver ??= 100000; }
+  for (const partner of state.partners ?? []) { partner.dailyLimit ??= 1000000; partner.reviewOver ??= 100000; partner.flow ??= 'push'; partner.demoAutoApprove ??= !!demo && partner.id !== 'green'; }
   for (const item of state.accounts ?? []) for (const link of Object.values(item.links ?? {})) link.verified ??= !!demo;
   for (const row of state.transactions ?? []) if (row.type === 'coupon' && row.coupon) row.coupon.revealed ??= true;
   return state;

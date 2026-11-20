@@ -57,14 +57,15 @@ async function act(op, payload = {}) {
   scheduleMockPayouts();
   return clean(result) ?? result;
 }
-// 데모 모드(서버 없음): 승인된 출금을 모의 지급대행이 3초 뒤 입금 완료로 처리한다.
+// 데모 모드(서버 없음): 승인된 출금은 모의 지급대행이, '자동 승인' 웹하드의 포인트 확정은 모의 웹하드가 3초 뒤 처리한다.
 let mockTimer;
 function scheduleMockPayouts() {
-  if (live() || mockTimer || !S.payoutQueue(state).length) return;
+  if (live() || mockTimer || (!S.payoutQueue(state).length && !S.mockConfirmQueue(state).length)) return;
   mockTimer = setTimeout(() => {
     mockTimer = null;
     const next = S.load();
-    if (!S.runMockPayouts(next)) return;
+    const done = S.runMockPayouts(next) + S.runMockConfirms(next);
+    if (!done) return;
     S.save(next);
     state = withServer(next);
     if (!busy()) render(true);
@@ -217,6 +218,34 @@ function exchangeDialog(id) {
     <button class="btn primary block" type="submit" ${available !== null && available < item.min ? 'disabled' : ''}>교환 신청 ${icon('arrow', 17)}</button>
     <p class="muted small">신청 후 ${item.name} 승인 시 사용 가능 포인트로 적립됩니다. 승인 전에는 거래 내역에서 취소할 수 있어요.</p></form>`);
 }
+// 웹하드에서 넘어온 미확정 포인트 확정 (전액 또는 일부)
+function confirmDialog(id) {
+  const viewer = me();
+  const item = state.partners.find(partner => partner.id === id);
+  if (!item || viewer?.role !== 'user') return;
+  const held = S.unconfirmedFor(state, viewer.id, id);
+  dialog(escape(item.name) + ' 포인트 확정', `<p class="muted">확정하면 ${escape(item.name)}에 포인트 사용 승인을 요청합니다. 승인되면 바로 <b>사용 가능 포인트</b>가 되어 출금·쿠폰·상품권 구매에 쓸 수 있어요.</p>
+    <form class="stack" data-form="confirm" data-id="${id}"><label for="confirm-amount">확정할 포인트</label>
+    <div class="amount-field"><input id="confirm-amount" name="amount" type="number" inputmode="numeric" min="1" max="${held}" step="1" required value="${held}"><span>P</span></div>
+    <div class="chips">${[0.5].map(r => Math.floor(held * r)).filter(v => v >= 1 && v < held).map(v => `<button type="button" class="chip" data-action="fill" data-target="confirm-amount" data-value="${v}">절반 ${format(v)}</button>`).join('')}<button type="button" class="chip" data-action="fill" data-target="confirm-amount" data-value="${held}">전액</button></div>
+    <div class="form-summary"><div><span>미확정 포인트</span><strong>${money(held)}</strong></div><div class="total"><span>확정 후 남는 미확정</span><strong id="confirm-left" data-held="${held}">0 P</strong></div></div>
+    <button class="btn primary block" type="submit">포인트 확정 ${icon('check', 17)}</button>
+    <p class="muted small">확정 요청 후에는 취소할 수 없습니다. ${escape(item.name)}에서 승인을 거절하면 포인트는 다시 미확정으로 돌아옵니다.</p></form>`, 'narrow');
+}
+// 데모: 웹하드 사이트에서 전환을 신청하는 과정을 흉내 낸다
+function simulateDialog(id) {
+  const viewer = me();
+  const item = state.partners.find(partner => partner.id === id);
+  if (!item || viewer?.role !== 'user') return;
+  const available = S.partnerAvailable(state, viewer.id, id);
+  dialog(escape(item.name) + ' 전환 신청 (데모)', `<div class="notice-bar">${icon('alert', 18)}<span><b>데모</b> 실제로는 ${escape(item.name)} 사이트에서 신청하며, ${escape(item.name)}이(가) API로 포인트를 보내 줍니다.</span></div>
+    <form class="stack" data-form="simulate" data-id="${id}"><label for="simulate-amount">전환할 ${escape(item.name)} 포인트</label>
+    <div class="amount-field"><input id="simulate-amount" data-divisor="${item.divisor}" name="amount" type="number" min="${item.min}" ${available === null ? '' : `max="${available}"`} step="${item.divisor}" required placeholder="${format(item.min)}"><span>P</span></div>
+    <div class="chips"><button type="button" class="chip" data-action="fill" data-target="simulate-amount" data-value="10000">10,000</button>${available === null ? '' : `<button type="button" class="chip" data-action="fill" data-target="simulate-amount" data-value="${available - (available % item.divisor)}">전액</button>`}</div>
+    <div class="form-summary"><div><span>웹하드 보유</span><strong>${available === null ? '—' : money(available)}</strong></div><div><span>전환 수수료</span><strong>${S.feePercent(item)}%</strong></div><div class="total"><span>넘어올 스마일 포인트</span><strong id="simulate-net">0 P</strong></div></div>
+    <button class="btn primary block" type="submit">전환 신청 ${icon('arrow', 17)}</button>
+    <p class="muted small">넘어온 포인트는 <b>미확정</b>으로 쌓이고, [포인트 확정]을 눌러야 사용할 수 있어요.</p></form>`, 'narrow');
+}
 function linkDialog(id) {
   const item = state.partners.find(partner => partner.id === id);
   if (!item) return;
@@ -248,7 +277,7 @@ function productDialog(id) {
     <div class="form-summary"><div><span>브랜드</span><strong>${escape(item.brand)}</strong></div><div><span>상품 포인트</span><strong>${money(item.cost)}</strong></div><div><span>유효기간</span><strong>구매일로부터 90일</strong></div><div><span>남은 수량</span><strong>${format(item.stock)}개</strong></div>${isUser ? `<div><span>사용 가능</span><strong>${money(available)}</strong></div>` : ''}</div>
     ${isUser ? `<form class="stack" data-form="purchase" data-id="${item.id}"><label for="qty">수량</label><div class="qty"><button type="button" class="icon-btn" data-action="qty" data-value="-1" aria-label="수량 줄이기">${icon('minus', 18)}</button><input id="qty" name="qty" type="number" min="1" max="5" value="1" data-cost="${item.cost}"><button type="button" class="icon-btn" data-action="qty" data-value="1" aria-label="수량 늘리기">${icon('plus', 18)}</button><span class="qty-total" id="qty-total">${format(item.cost)} P</span></div>
       <button class="btn primary block" type="submit" ${soldOut || available < item.cost ? 'disabled' : ''}>${soldOut ? '품절' : available < item.cost ? '포인트가 부족해요' : '포인트로 구매'} ${icon('gift', 17)}</button></form>
-      <p class="muted small">구매한 쿠폰은 쿠폰함에서 바코드로 사용할 수 있습니다. 개발 중인 데모로 실제 매장에서는 사용할 수 없습니다.</p>`
+      <p class="muted small">${S.balances(state, viewer.id).charged ? `충전 포인트 ${format(S.balances(state, viewer.id).charged)} P가 먼저 사용됩니다. ` : ''}구매한 쿠폰은 쿠폰함에서 바코드로 사용할 수 있습니다. 개발 중인 데모로 실제 매장에서는 사용할 수 없습니다.</p>`
       : `<a class="btn primary block" href="#app/user/shop" data-action="close">로그인하고 구매하기</a>`}`);
 }
 function transactionDialog(id) {
@@ -260,11 +289,17 @@ function transactionDialog(id) {
   const failedPayout = viewer.role === 'admin' && row.type === 'withdrawal' && row.status === 'processing' && row.payout?.status === 'failed';
   const couponCancel = viewer.role === 'admin' && row.type === 'coupon' && row.status === 'complete' && !row.coupon?.used;
   const reversible = row.type === 'exchange' && row.status === 'complete' && !row.reversed && (viewer.role === 'admin' || (viewer.role === 'partner' && Date.now() - new Date(row.updated ?? row.date) <= 30 * 86400000));
+  const cancelable = row.type === 'exchange' && row.status === 'held' && row.transferId && (viewer.role === 'admin' || viewer.role === 'partner');
+  const chargeCancel = viewer.role === 'admin' && row.type === 'charge' && row.status === 'complete';
+  const userConfirm = viewer.role === 'user' && row.type === 'exchange' && row.status === 'held';
   dialog('거래 상세', `${details(state, row, viewer)}
     ${viewer.role === 'admin' && row.type === 'withdrawal' && row.status === 'pending' ? `<div class="dialog-actions" data-payout-box><button class="btn outline sm" type="button" data-action="payout-account" data-id="${row.id}">${icon('eye', 16)}지급 계좌번호 확인</button><small class="muted">열람 기록이 감사 기록에 남습니다.</small></div>` : ''}
     ${reversible ? `<details class="danger-zone"><summary>교환 회수</summary><p class="muted small">판매 취소·부정 적립 등으로 이 교환의 스마일 포인트 ${format(row.points)} P를 회원에게서 회수합니다. 이미 사용했다면 잔액이 마이너스가 될 수 있습니다.</p><label for="reverse-reason" class="small-label">회수 사유 <small class="muted">(회원에게 안내됩니다)</small></label><input id="reverse-reason" maxlength="100" placeholder="예: 판매 취소로 웹하드 포인트 환원"><div class="dialog-actions"><button class="btn danger sm" type="button" data-action="reverse" data-id="${row.id}">회수하기</button></div></details>` : ''}
     ${failedPayout ? `<p class="muted small">지급대행사에서 이 거래번호(<b>${row.id}</b>)의 이체 여부를 먼저 확인하세요. 재시도는 같은 거래번호로 요청합니다.</p><label for="reject-reason" class="small-label">반려 사유 <small class="muted">(반려 시 필수 · 포인트가 복원됩니다)</small></label><input id="reject-reason" maxlength="100" placeholder="예: 계좌 정보 오류로 이체 불가">
       <div class="dialog-actions"><button class="btn primary" type="button" data-action="payout-retry" data-id="${row.id}">이체 재시도</button><button class="btn outline" type="button" data-action="payout-manual" data-id="${row.id}">수동 지급 완료</button><button class="btn danger" type="button" data-action="payout-refund" data-id="${row.id}">반려·포인트 복원</button></div>` : ''}
+    ${userConfirm ? `<div class="dialog-actions"><button class="btn primary" type="button" data-action="confirm" data-id="${row.partner}">${icon('check', 16)}포인트 확정하기</button></div>` : ''}
+    ${cancelable ? `<details class="danger-zone"><summary>전환 취소</summary><p class="muted small">아직 확정하지 않은 이 전환(웹하드 거래번호 <b>${escape(row.transferId)}</b>)의 미확정 포인트를 취소합니다. 웹하드에서 회원 포인트를 복원해 주세요.</p><label for="cancel-reason" class="small-label">취소 사유</label><input id="cancel-reason" maxlength="100" placeholder="예: 판매 취소"><div class="dialog-actions"><button class="btn danger sm" type="button" data-action="transfer-cancel" data-id="${escape(row.transferId)}">전환 취소</button></div></details>` : ''}
+    ${chargeCancel ? `<details class="danger-zone"><summary>충전 취소</summary><p class="muted small">사용하지 않은 충전 포인트만 취소할 수 있습니다. 카드 결제 취소는 PG 관리자 화면에서 함께 진행하세요.</p><label for="charge-reason" class="small-label">취소 사유</label><input id="charge-reason" maxlength="100" placeholder="예: 회원 요청 결제 취소"><div class="dialog-actions"><button class="btn danger sm" type="button" data-action="charge-cancel" data-id="${row.id}">충전 취소</button></div></details>` : ''}
     ${couponCancel ? `<label for="reject-reason" class="small-label">취소 사유 <small class="muted">(회원에게 안내됩니다)</small></label><input id="reject-reason" maxlength="100" placeholder="예: 공급사 품절로 발행 불가"><div class="dialog-actions"><button class="btn danger" type="button" data-action="coupon-cancel-confirm" data-id="${row.id}">주문 취소·환불</button></div>` : ''}
     ${options.some(([s]) => s === 'rejected') ? `<label for="reject-reason" class="small-label">반려 사유 <small class="muted">(반려 시 필수)</small></label><input id="reject-reason" maxlength="100" placeholder="예: 판매 포인트 정산 보류">` : ''}
     <div class="dialog-actions">${options.map(([status, label]) => `<button class="btn ${status === 'complete' ? 'primary' : status === 'rejected' ? 'danger' : 'outline'}" type="button" data-action="status" data-id="${row.id}" data-value="${status}">${label}</button>`).join('')}
@@ -296,6 +331,8 @@ function downloadCsv(scope, name) {
 
 // 서버 모드: 이체 결과가 곧 반영되므로 잠시 뒤 한 번 더 받아 온다.
 function followPayouts() { if (live()) { setTimeout(poll, 4000); setTimeout(poll, 9000); } }
+// 포인트 확정: 웹하드 승인 결과가 곧 오므로(데모 자동 승인 3초) 잠시 뒤 다시 받아 온다.
+function followConfirms() { if (live()) { setTimeout(poll, 3800); setTimeout(poll, 8000); } }
 
 // ───────── 클릭 동작 ─────────
 async function onAction(event) {
@@ -332,6 +369,20 @@ async function onAction(event) {
     case 'find-password': dialog('비밀번호 찾기', `<form class="stack" data-form="find"><p class="muted">가입한 이메일로 비밀번호 재설정 링크를 보내 드립니다.</p><label for="find-email">이메일</label><input id="find-email" name="email" type="email" required><button class="btn primary" type="submit">재설정 링크 받기</button></form>`, 'narrow'); break;
     case 'logout': await act('logout'); ui = {}; go('#home'); notify('로그아웃했습니다.'); break;
     case 'exchange': exchangeDialog(id); break;
+    case 'confirm': confirmDialog(id); break;
+    case 'simulate': simulateDialog(id); break;
+    case 'confirm-all': {
+      const held = S.balances(state, viewer.id).unconfirmed;
+      dialog('미확정 전액 확정', `<p>미확정 포인트 <b>${format(held)} P</b>를 모두 확정할까요? 웹하드별로 사용 승인을 요청하고, 승인되면 바로 사용할 수 있어요.</p><div class="dialog-actions"><button class="btn primary" type="button" data-action="confirm-all-go">전액 확정</button><button class="btn outline" type="button" data-action="close">취소</button></div>`, 'narrow');
+      break;
+    }
+    case 'confirm-all-go': { const list = await act('requestConfirmAll'); refresh(`${list.length}개 웹하드에 확정 요청을 보냈어요. 승인되면 알림으로 알려 드릴게요.`); followConfirms(); break; }
+    case 'confirm-approve': await act('approveConfirm', { id }); refresh('확정 요청을 승인했습니다. 회원의 사용 가능 포인트로 반영되었어요.'); break;
+    case 'confirm-reject':
+      dialog('확정 요청 거절', `<form class="stack" data-form="confirm-reject" data-id="${escape(id)}"><p class="muted">거절하면 포인트가 회원의 미확정 포인트로 돌아갑니다.</p><label for="cr-reason">거절 사유</label><input id="cr-reason" name="reason" required maxlength="100" placeholder="회원에게 안내되는 사유입니다"><button class="btn danger" type="submit">거절하기</button></form>`, 'narrow');
+      break;
+    case 'transfer-cancel': await act('cancelTransfer', { transferId: id, reason: document.getElementById('cancel-reason')?.value ?? '' }); refresh('미확정 포인트 전환을 취소했습니다. 회원에게 알림을 보냈어요.'); break;
+    case 'charge-cancel': await act('cancelCharge', { id, reason: document.getElementById('charge-reason')?.value ?? '' }); refresh('충전을 취소했습니다. PG 결제 취소도 진행해 주세요.'); break;
     case 'link': linkDialog(id); break;
     case 'unlink':
       dialog('연결 해제', `<p>${state.partners.find(p => p.id === id)?.name} 연결을 해제할까요? 다시 연결하면 잔액을 새로 불러옵니다.</p><div class="dialog-actions"><button class="btn danger" type="button" data-action="unlink-confirm" data-id="${id}">해제</button><button class="btn outline" type="button" data-action="close">취소</button></div>`, 'narrow');
@@ -429,7 +480,7 @@ async function onAction(event) {
       break;
     case 'member': dialog('회원 상세', memberDetail(state, viewer, id), 'wide'); break;
     case 'member-status': await act('setMemberStatus', { userId: id, status: value }); refresh(value === 'active' ? '이용 정지를 해제했습니다.' : '이용을 정지했습니다.'); break;
-    case 'partner-edit': dialog(`${state.partners.find(p => p.id === id).name} 정책 수정`, partnerForm(state.partners.find(p => p.id === id)), 'narrow'); break;
+    case 'partner-edit': dialog(`${state.partners.find(p => p.id === id).name} 정책 수정`, partnerForm(state.partners.find(p => p.id === id), state.server?.demo !== false), 'narrow'); break;
     case 'product-edit': dialog(escape(state.products.find(p => p.id === id).name), productForm(state.products.find(p => p.id === id)), 'narrow'); break;
     case 'announce-toggle': await act('toggleAnnouncement', { id }); refresh('공지 노출 상태를 바꿨습니다.'); break;
     case 'regen-key':
@@ -497,7 +548,15 @@ let filterTimer;
 document.addEventListener('input', event => {
   const input = event.target;
   if (input.closest('.dash-content form') && !input.matches('[data-ui], [data-filter]')) dirty = true;
-  if (input.id === 'withdraw-amount') document.getElementById('withdraw-net').textContent = format(Math.max(0, Number(input.value) - Number(input.dataset.fee))) + '원';
+  if (input.id === 'withdraw-amount') {
+    const value = Math.max(0, Number(input.value) || 0);
+    const fee = Math.round(value * Number(input.dataset.rate) / 100);
+    document.getElementById('withdraw-fee').textContent = format(fee) + ' P';
+    document.getElementById('withdraw-net').textContent = format(Math.max(0, value - fee)) + '원';
+  }
+  if (input.id === 'charge-amount') document.getElementById('charge-total').textContent = format(Math.max(0, Number(input.value) || 0)) + '원';
+  if (input.id === 'simulate-amount') document.getElementById('simulate-net').textContent = format(Math.floor(Number(input.value) / Number(input.dataset.divisor))) + ' P';
+  if (input.id === 'confirm-amount') { const left = document.getElementById('confirm-left'); left.textContent = format(Math.max(0, Number(left.dataset.held) - (Number(input.value) || 0))) + ' P'; }
   if (input.id === 'exchange-amount') document.getElementById('exchange-net').textContent = format(Math.floor(Number(input.value) / Number(input.dataset.divisor))) + ' P';
   if (input.id === 'qty') document.getElementById('qty-total').textContent = format(Math.min(5, Math.max(1, Number(input.value) || 1)) * Number(input.dataset.cost)) + ' P';
   if (input.dataset.filter === 'product') {
@@ -610,6 +669,11 @@ async function submitForm(form, kind) {
       case 'settle': { const r = await act('confirmSettlement', { date: form.dataset.date, count: Number(data.count), amount: Number(data.amount) }); refresh(r.status === 'match' ? '스마일 포인트 집계와 일치합니다.' : `집계와 ${format(Math.abs(r.diff))} P 차이가 있어 운영팀에 알렸습니다.`, r.status === 'match' ? '' : 'error'); break; }
       case 'event-create': await act('createEvent', { ...data, firstOnly: checked('firstOnly') }); refresh('이벤트를 등록했습니다.'); break;
       case 'exchange': await act('exchange', { partnerId: form.dataset.id, amount }); refresh('교환을 신청했습니다. 승인되면 알림으로 알려 드릴게요.'); break;
+      case 'confirm': { const done = await act('requestConfirm', { partnerId: form.dataset.id, amount }); refresh(`${format(done.points)} P 확정을 요청했어요. 웹하드가 승인하면 바로 사용할 수 있어요.`); followConfirms(); break; }
+      case 'simulate': { const row = await act('simulateTransfer', { partnerId: form.dataset.id, amount }); refresh(`${format(row.points)} P가 미확정 포인트로 넘어왔어요. [포인트 확정]을 눌러 사용하세요.`); break; }
+      case 'charge': { const row = await act('charge', { amount, method: data.method }); form.reset(); refresh(row?.status === 'complete' ? `${format(row.points)} P를 충전했어요. 쿠폰·상품권 구매에 사용할 수 있습니다.` : '결제를 진행해 주세요.'); break; }
+      case 'confirm-reject': await act('rejectConfirm', { id: form.dataset.id, reason: data.reason }); refresh('확정 요청을 거절했습니다. 포인트는 회원의 미확정으로 돌아갔어요.'); break;
+      case 'partner-transfer': { const r = await act('partnerTransfer', { transferId: data.transferId, member: data.member, source: Number(data.source), points: Number(data.points) }); form.reset(); refresh(r.duplicate ? '이미 등록된 거래번호입니다. 다시 적립하지 않았어요.' : '전환을 등록했습니다. 회원에게 미확정 포인트로 적립되었어요.'); break; }
       case 'link': { const sent = await act('linkPartner', { partnerId: form.dataset.id, loginId: data.loginId }); refresh(); linkVerifyDialog(form.dataset.id, sent?.code ?? ''); notify('인증번호를 보냈습니다. 웹하드에서 확인해 주세요.'); break; }
       case 'link-confirm': { const link = await act('confirmLink', { partnerId: form.dataset.id, code: data.code }); refresh(link.balance === null ? '연결 완료! 교환 가능 포인트는 제휴사 승인 시 확인합니다.' : `연결 완료! 교환 가능 ${format(link.balance)} P를 불러왔어요.`); break; }
       case 'withdrawal': { const row = await act('withdraw', { amount }); refresh(row?.status === 'processing' ? '출금을 신청했습니다. 바로 계좌 이체를 요청했어요.' : state.settings.payoutMode === 'api' ? '출금을 신청했습니다. 승인되면 등록 계좌로 자동 이체됩니다.' : '출금을 신청했습니다. 승인 후 다음 영업일에 입금됩니다.'); if (row?.status === 'processing') followPayouts(); break; }
@@ -626,9 +690,9 @@ async function submitForm(form, kind) {
       case 'notify': await act('updateProfile', { notify: { email: checked('email'), sms: checked('sms'), marketing: checked('marketing') } }); notify('알림 설정을 저장했습니다.'); break;
       case 'password': await act('changePassword', { before: data.before, after: data.after }); form.reset(); notify('비밀번호를 변경했습니다.'); break;
       case 'adjust': await act('adjust', { userId: form.dataset.id, amount, reason: data.reason }); refresh('포인트를 조정했습니다.'); break;
-      case 'partner': await act('updatePartner', { partnerId: form.dataset.id, divisor: Number(data.divisor), min: Number(data.min), dailyLimit: Number(data.dailyLimit), reviewOver: Number(data.reviewOver), active: checked('active') }); refresh('제휴사 정책을 저장했습니다.'); break;
-      case 'product-edit': await act('updateProduct', { productId: form.dataset.id, cost: Number(data.cost), stock: Number(data.stock), active: checked('active') }); refresh('상품을 저장했습니다.'); break;
-      case 'settings': await act('updateSettings', { ...data, maintenance: checked('maintenance') }); refresh('운영 설정을 저장했습니다.'); break;
+      case 'partner': await act('updatePartner', { partnerId: form.dataset.id, divisor: Number(data.divisor), min: Number(data.min), dailyLimit: Number(data.dailyLimit), reviewOver: Number(data.reviewOver), active: checked('active'), flow: data.flow, ...(form.elements.demoAutoApprove ? { demoAutoApprove: checked('demoAutoApprove') } : {}) }); refresh('제휴사 정책을 저장했습니다.'); break;
+      case 'product-edit': await act('updateProduct', { productId: form.dataset.id, cost: Number(data.cost), stock: Number(data.stock), supplyPrice: data.supplyPrice, active: checked('active') }); refresh('상품을 저장했습니다.'); break;
+      case 'settings': await act('updateSettings', { ...data, maintenance: checked('maintenance'), gradeFeeDiscount: checked('gradeFeeDiscount'), chargeEnabled: checked('chargeEnabled') }); refresh('운영 설정을 저장했습니다.'); break;
       case 'announce': await act('addAnnouncement', { title: data.title, body: data.body, pinned: checked('pinned') }); refresh('공지를 등록했습니다.'); break;
       case 'webhook': await act('setWebhook', { url: data.url }); refresh('웹훅 주소를 저장했습니다.'); break;
       case 'partner-create': await act('createPartner', data); refresh('제휴사를 등록했습니다. 연동 확인 후 운영을 켜 주세요.'); break;

@@ -5,6 +5,7 @@ import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, before, test } from 'node:test';
+import * as S from './state.js';
 
 const dir = mkdtempSync(join(tmpdir(), 'smilepoint-'));
 const port = 3900 + Math.floor(Math.random() * 500);
@@ -67,18 +68,86 @@ test('권한 검사와 요청 위조 방지', async () => {
   assert.ok(snap.partners.filter(p => p.apiKey).length === 1);
 });
 
-test('웹하드 제휴사 API: 키 인증, 조회, 승인', async () => {
+test('웹하드 전환 API: 미확정 적립 → 회원 확정(일부) → 사용 요청 웹훅 → 웹하드 승인 → 사용 가능', async () => {
+  const key = db().partners.find(p => p.id === 'green').apiKey;
+  const other = db().partners.find(p => p.id === 'cloud').apiKey;
+  const post = (path, body = {}, k = key) => fetch(base + path, { method: 'POST', headers: { 'X-Api-Key': k, 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  const get = (path, k = key) => fetch(base + path, { headers: { 'X-Api-Key': k } }).then(r => r.json());
+  assert.equal((await post('/api/v1/transfers', {}, 'bad')).status, 401);
+  const unknown = await post('/api/v1/transfers', { transferId: 'GF-0', member: 'nobody', source: 10000, points: 5000 });
+  assert.equal(unknown.status, 404);
+  assert.equal((await unknown.json()).error, 'member_not_linked', '연결하지 않은 웹하드 회원은 받지 않는다');
+  assert.equal((await post('/api/v1/transfers', { transferId: 'GF-X', member: 'smile_green', source: 1000, points: 2000 })).status, 400, 'points는 source 이하');
+  const b0 = S.balances(db(), 'u1');
+  // 웹하드 회원이 10,000 P 전환 신청 → 수수료 50%를 뺀 5,000 P가 넘어온다
+  const sent = await post('/api/v1/transfers', { transferId: 'GF-1001', member: 'SMILE_GREEN', source: 10000, points: 5000 });
+  assert.equal(sent.status, 201);
+  const transfer = (await sent.json()).data;
+  assert.deepEqual([transfer.unconfirmed, transfer.status, transfer.member], [5000, 'unconfirmed', 'smile_green']);
+  const dup = await post('/api/v1/transfers', { transferId: 'GF-1001', member: 'smile_green', source: 10000, points: 5000 });
+  assert.equal(dup.status, 200);
+  assert.equal((await dup.json()).duplicate, true, '같은 거래번호는 다시 적립하지 않는다');
+  const b1 = S.balances(db(), 'u1');
+  assert.equal(b1.unconfirmed, b0.unconfirmed + 5000);
+  assert.equal(b1.available, b0.available, '미확정 포인트는 사용 가능 잔액이 아니다');
+  // 회원이 일부(3,000 P)만 확정 → 웹하드로 사용 요청
   const user = await call('loginAs', { id: 'u1' });
-  const requested = await call('exchange', { partnerId: 'green', amount: 2000 }, user.cookie);
-  assert.equal(requested.status, 200);
-  const key = JSON.parse(readFileSync(join(dir, 'db.json'), 'utf8')).partners.find(p => p.id === 'green').apiKey;
-  assert.equal((await fetch(base + '/api/v1/exchanges', { headers: { 'X-Api-Key': 'bad' } })).status, 401);
-  const list = await (await fetch(base + '/api/v1/exchanges?status=pending', { headers: { 'X-Api-Key': key } })).json();
-  assert.ok(list.data.some(row => row.id === requested.body.result.id));
-  const approved = await fetch(`${base}/api/v1/exchanges/${requested.body.result.id}/approve`, { method: 'POST', headers: { 'X-Api-Key': key, 'Content-Type': 'application/json' }, body: '{}' });
-  assert.equal((await approved.json()).data.status, 'complete');
-  const other = JSON.parse(readFileSync(join(dir, 'db.json'), 'utf8')).partners.find(p => p.id === 'cloud').apiKey;
-  assert.equal((await fetch(`${base}/api/v1/exchanges/${requested.body.result.id}/approve`, { method: 'POST', headers: { 'X-Api-Key': other } })).status, 404);
+  assert.equal((await call('requestConfirm', { partnerId: 'green', amount: b1.unconfirmed + 1 }, user.cookie)).status, 400);
+  const confirm = await call('requestConfirm', { partnerId: 'green', amount: 3000 }, user.cookie);
+  assert.equal(confirm.status, 200, JSON.stringify(confirm.body));
+  const cid = confirm.body.result.id;
+  const b2 = S.balances(db(), 'u1');
+  assert.deepEqual([b2.unconfirmed, b2.confirming, b2.available], [b1.unconfirmed - 3000, 3000, b1.available]);
+  const hook = db().webhooks.find(h => h.event === 'points.confirm_requested' && h.data.confirmationId === cid);
+  assert.ok(hook, '웹하드로 사용 요청 웹훅을 보낸다');
+  assert.equal(hook.data.transfers.reduce((s, t) => s + t.points, 0), 3000);
+  const pending = await get('/api/v1/confirmations?status=pending');
+  assert.ok(pending.data.some(c => c.id === cid && c.points === 3000));
+  assert.equal((await post(`/api/v1/confirmations/${cid}/approve`, {}, other)).status, 404, '다른 웹하드는 승인할 수 없다');
+  // 웹하드 사용 승인 → 사용 가능
+  const approved = await post(`/api/v1/confirmations/${cid}/approve`);
+  assert.equal((await approved.json()).data.status, 'approved');
+  const b3 = S.balances(db(), 'u1');
+  assert.deepEqual([b3.confirming, b3.available], [0, b1.available + 3000]);
+  assert.equal((await post(`/api/v1/confirmations/${cid}/approve`)).status, 200, '같은 승인이 다시 와도 한 번만 반영');
+  assert.equal(S.balances(db(), 'u1').available, b3.available);
+  // 거절되면 다시 미확정으로
+  const second = await call('requestConfirm', { partnerId: 'green', amount: 1000 }, user.cookie);
+  const rejected = await post(`/api/v1/confirmations/${second.body.result.id}/reject`, { reason: '웹하드 잔액 부족' });
+  assert.equal((await rejected.json()).data.status, 'rejected');
+  assert.equal(S.balances(db(), 'u1').unconfirmed, b2.unconfirmed);
+  // 확정하지 않은 전환은 웹하드가 취소할 수 있다 (먼저 들어온 미확정분부터 확정되어 GF-1001은 그대로)
+  const view = await get('/api/v1/transfers/GF-1001');
+  assert.equal(view.data.unconfirmed, 5000 - Math.max(0, 3000 - b0.unconfirmed));
+  const canceled = await post('/api/v1/transfers/GF-1001/cancel', { reason: '판매 취소' });
+  assert.equal(canceled.status, 200);
+  assert.equal(S.balances(db(), 'u1').unconfirmed, b2.unconfirmed - view.data.unconfirmed);
+  assert.equal((await post('/api/v1/transfers/GF-1001/cancel', {})).status, 409);
+});
+
+test('데모: 자동 승인 웹하드 · 카드 충전 포인트는 쿠폰 전용(출금·선물 불가)', async () => {
+  const user = await call('login', { email: 'jia@example.com', password: 'smile1234' });
+  const me = (await state(user.cookie)).accounts[0];
+  const partnerId = Object.keys(me.links).find(id => id !== 'green');
+  const sim = await call('simulateTransfer', { partnerId, amount: db().partners.find(p => p.id === partnerId).min }, user.cookie);
+  assert.equal(sim.status, 200, JSON.stringify(sim.body));
+  assert.equal(sim.body.result.status, 'held');
+  const all = await call('requestConfirmAll', {}, user.cookie);
+  assert.equal(all.status, 200);
+  await new Promise(resolve => setTimeout(resolve, 3600));
+  assert.ok(db().confirmations.filter(c => c.userId === me.id).every(c => c.status === 'approved'), '데모 자동 승인');
+  assert.equal(S.balances(db(), me.id).unconfirmed, 0);
+  const before = S.balances(db(), me.id);
+  const charged = await call('charge', { amount: 20000, method: 'card' }, user.cookie);
+  assert.equal(charged.status, 200);
+  assert.equal(charged.body.result.status, 'complete');
+  const after = S.balances(db(), me.id);
+  assert.deepEqual([after.available, after.charged, after.withdrawable], [before.available + 20000, before.charged + 20000, before.withdrawable]);
+  assert.equal((await call('charge', { amount: 50, method: 'card' }, user.cookie)).status, 400);
+  assert.equal((await call('gift', { email: 'user@smilepoint.kr', amount: after.withdrawable + 1000 }, user.cookie)).status, 400);
+  await call('order', { productId: 'coffee', quantity: 1 }, user.cookie);
+  assert.equal(S.balances(db(), me.id).charged, after.charged - 4500, '쿠폰 구매는 충전 포인트부터 차감');
+  assert.equal(S.balances(db(), me.id).withdrawable, after.withdrawable);
 });
 
 test('사진 주소 분리, 비밀번호 변경 시 다른 기기 로그아웃', async () => {
@@ -209,6 +278,7 @@ test('운영 모드: 기본 비밀번호 계정 잠금, 테스트 로그인 차�
   assert.equal(health.demo, false);
   assert.equal((await fetch(base + '/api/v1/exchanges', { headers: { 'X-Api-Key': demoKey } })).status, 401, '데모 때의 API 키는 운영 전환 시 폐기');
   assert.equal((await call('socialDemo', { provider: 'kakao', terms: true, privacy: true, age: true })).status, 403);
+  assert.equal((await call('simulateTransfer', { partnerId: 'green', amount: 2000 }, owner.cookie)).status, 403, '운영에서는 전환 흉내 불가');
   const reset = await call('requestReset', { email: 'admin@smilepoint.kr' });
   assert.deepEqual(reset.body.result, { sent: true }, '운영에서는 재설정 링크를 화면에 주지 않는다');
 });
@@ -245,5 +315,6 @@ test('운영 모드 첫 실행: 샘플 없이 최고 관리자만 생성', async
     assert.equal(db.accounts[0].email, 'owner@test.com');
     assert.equal(db.transactions.length, 0);
     assert.equal(db.settings.mockWebhardBalance, false);
+    assert.deepEqual([db.settings.withdrawFeeRate, db.settings.withdrawalMinimum], [5.5, 10000]);
   } finally { await stop(proc); rmSync(prodDir, { recursive: true, force: true }); }
 });

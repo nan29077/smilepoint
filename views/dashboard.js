@@ -12,10 +12,11 @@ export const pageTitle = (role, page) => pages(role).find(([id]) => id === page)
 
 function badges(state, me) {
   const pending = state.transactions.filter(row => row.status === 'pending');
-  if (me.role === 'admin') return { requests: pending.filter(r => r.type === 'exchange').length, payouts: pending.filter(r => r.type === 'withdrawal').length + state.transactions.filter(r => r.type === 'withdrawal' && r.status === 'processing' && r.payout?.status === 'failed').length, support: state.tickets.filter(t => t.status === 'open').length, members: state.accounts.filter(a => a.bankRequest).length };
-  if (me.role === 'partner') return { requests: pending.filter(r => r.type === 'exchange' && r.partner === me.partnerId && !r.partnerApproved).length + (state.linkRequests ?? linkRequests(state, me.partnerId)).length };
+  const asks = (state.confirmations ?? []).filter(item => item.status === 'pending');
+  if (me.role === 'admin') return { requests: pending.filter(r => r.type === 'exchange').length + asks.length, payouts: pending.filter(r => r.type === 'withdrawal').length + state.transactions.filter(r => r.type === 'withdrawal' && r.status === 'processing' && r.payout?.status === 'failed').length, support: state.tickets.filter(t => t.status === 'open').length, members: state.accounts.filter(a => a.bankRequest).length };
+  if (me.role === 'partner') return { confirms: asks.filter(item => item.partner === me.partnerId).length, requests: pending.filter(r => r.type === 'exchange' && r.partner === me.partnerId && !r.partnerApproved).length + (state.linkRequests ?? linkRequests(state, me.partnerId)).length };
   const now = new Date().toISOString();
-  return { coupons: state.transactions.filter(r => r.userId === me.id && r.type === 'coupon' && r.status === 'complete' && !r.coupon?.used && r.coupon?.expires > now).length, support: state.tickets.filter(t => t.userId === me.id && t.status === 'answered' && !t.seen).length, alerts: notificationsFor(state, me).filter(item => !item.read).length };
+  return { exchange: state.transactions.filter(r => r.userId === me.id && r.type === 'exchange' && r.status === 'held').length, coupons: state.transactions.filter(r => r.userId === me.id && r.type === 'coupon' && r.status === 'complete' && !r.coupon?.used && r.coupon?.expires > now).length, support: state.tickets.filter(t => t.userId === me.id && t.status === 'answered' && !t.seen).length, alerts: notificationsFor(state, me).filter(item => !item.read).length };
 }
 
 export function dashboard(state, me, page, ui) {

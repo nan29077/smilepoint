@@ -199,7 +199,7 @@ function failed(key, windowMs = 10 * 60000) {
 setInterval(() => { const now = Date.now(); for (const [key, entry] of attempts) if (now - entry.first > 3600000) attempts.delete(key); }, 600000).unref();
 // 같은 요청이 연달아 들어오면(더블클릭·중복 제출) 한 번만 처리한다.
 const recent = new Map();
-const duplicateGuarded = new Set(['exchange', 'withdraw', 'order', 'gift', 'attend', 'setBank', 'linkPartner', 'openTicket', 'adjust', 'review', 'bulkReview', 'reverseExchange', 'createPartner', 'createProduct', 'createStaff', 'createEvent', 'addAnnouncement', 'replyTicket', 'regenerateKey', 'resetPassword', 'cancelCoupon']);
+const duplicateGuarded = new Set(['exchange', 'withdraw', 'order', 'gift', 'attend', 'setBank', 'linkPartner', 'openTicket', 'adjust', 'review', 'bulkReview', 'reverseExchange', 'createPartner', 'createProduct', 'createStaff', 'createEvent', 'addAnnouncement', 'replyTicket', 'regenerateKey', 'resetPassword', 'cancelCoupon', 'requestConfirm', 'requestConfirmAll', 'simulateTransfer', 'charge', 'partnerTransfer', 'cancelTransfer', 'approveConfirm', 'rejectConfirm', 'cancelCharge']);
 setInterval(() => { const now = Date.now(); for (const [key, at] of recent) if (now - at > 10000) recent.delete(key); }, 30000).unref();
 
 // ───────── 응답 도우미 ─────────
@@ -306,6 +306,7 @@ async function handlePartnerApi(request, response, url) {
   const partner = key ? db.partners.find(item => item.apiKey && sameText(item.apiKey, key)) : null;
   const finish = (status, body) => {
     if (partner) { S.apiLog(db, { partner: partner.id, method: request.method, path: url.pathname, status, ms: Date.now() - started, source: 'partner-api', ip: ip(request) }); persist(); }
+    if (db.webhooks?.some(item => item.status === 'queued')) setImmediate(deliverWebhooks);
     json(response, status, body);
   };
   if (!partner) {
@@ -337,6 +338,46 @@ async function handlePartnerApi(request, response, url) {
       return finish(200, { data: view(row) });
     }
     if (request.method === 'GET' && parts[2] === 'link-requests' && parts.length === 3) return finish(200, { data: S.linkRequests(db, partner.id) });
+    // ── 포인트 전환 (웹하드 → 스마일 포인트): 수수료를 뺀 포인트를 보내면 회원에게 미확정으로 적립된다
+    if (parts[2] === 'transfers') {
+      if (request.method === 'POST' && parts.length === 3) {
+        const body = await readBody(request, 16 * 1024);
+        const result = S.transferIn(db, partner.id, body);
+        return finish(result.duplicate ? 200 : 201, { data: result.transfer, duplicate: result.duplicate });
+      }
+      if (request.method === 'GET' && parts.length === 3) {
+        const status = url.searchParams.get('status');
+        const limit = Math.min(200, Math.max(1, Number(url.searchParams.get('limit')) || 100));
+        const offset = Math.max(0, Number(url.searchParams.get('offset')) || 0);
+        const ids = [...new Set(db.transactions.filter(row => row.type === 'exchange' && row.partner === partner.id && row.transferId).map(row => row.transferId))];
+        const list = ids.map(id => S.transferView(db, partner.id, id)).filter(item => !status || item.status === status);
+        return finish(200, { data: list.slice(offset, offset + limit), total: list.length, next: offset + limit < list.length ? offset + limit : null });
+      }
+      if (request.method === 'GET' && parts.length === 4) {
+        const item = S.transferView(db, partner.id, decodeURIComponent(parts[3]));
+        return item ? finish(200, { data: item }) : finish(404, { error: 'not_found' });
+      }
+      if (request.method === 'POST' && parts.length === 5 && parts[4] === 'cancel') {
+        if (!manager) return finish(409, { error: 'no_manager', message: '활성 담당자 계정이 없습니다.' });
+        const body = await readBody(request, 16 * 1024);
+        return finish(200, { data: S.cancelTransfer(db, manager.id, decodeURIComponent(parts[3]), body.reason ?? '') });
+      }
+    }
+    // ── 포인트 확정 요청: 회원이 확정하면 웹훅 points.confirm_requested 로 알리고, 웹하드가 승인·거절 API를 호출한다
+    if (parts[2] === 'confirmations') {
+      const confirmView = item => ({ id: item.id, status: item.status, member: item.member, points: item.points, source: item.source, transfers: item.transfers, requestedAt: item.date, processedAt: item.updated ?? null, reason: item.reason ?? null });
+      if (request.method === 'GET' && parts.length === 3) {
+        const status = url.searchParams.get('status');
+        const list = (db.confirmations ?? []).filter(item => item.partner === partner.id && (!status || item.status === status));
+        return finish(200, { data: list.slice(0, 200).map(confirmView), total: list.length });
+      }
+      if (request.method === 'POST' && parts.length === 5 && ['approve', 'reject'].includes(parts[4])) {
+        if (!manager) return finish(409, { error: 'no_manager', message: '활성 담당자 계정이 없습니다.' });
+        const body = await readBody(request, 16 * 1024);
+        const item = parts[4] === 'approve' ? S.approveConfirm(db, manager.id, parts[3]) : S.rejectConfirm(db, manager.id, parts[3], body.reason ?? '');
+        return finish(200, { data: confirmView(item) });
+      }
+    }
     if (request.method === 'POST' && parts[2] === 'settlements' && parts[3] && parts.length === 4) {
       const body = await readBody(request, 16 * 1024);
       const result = S.confirmSettlement(db, partner.id, parts[3], body, 'partner-api');
@@ -353,7 +394,7 @@ async function handlePartnerApi(request, response, url) {
     if (!error.keep) db = JSON.parse(backup);
     const status = error.status ?? 500;
     if (status >= 500) console.error(error);
-    return finish(status, { error: 'request_failed', message: status >= 500 ? '서버 오류가 발생했습니다.' : error.message });
+    return finish(status, { error: error.code ?? 'request_failed', message: status >= 500 ? '서버 오류가 발생했습니다.' : error.message });
   }
 }
 
@@ -483,6 +524,17 @@ async function processPayouts() {
 setInterval(processPayouts, 10000).unref();
 const schedulePayouts = () => { if (payout && S.payoutQueue(db).length) setTimeout(processPayouts, payout.mock ? 3000 : 0).unref(); };
 schedulePayouts();
+// 데모: '자동 승인' 웹하드의 포인트 사용 승인을 3초 뒤 흉내 낸다. (운영에서는 웹하드가 승인 API를 호출)
+let confirmTimer = null;
+const scheduleMockConfirms = () => {
+  if (!demo || confirmTimer || !S.mockConfirmQueue(db).length) return;
+  confirmTimer = setTimeout(() => {
+    confirmTimer = null;
+    try { if (S.runMockConfirms(db)) { persist(); setImmediate(deliverWebhooks); } } catch (error) { console.error('[mock-confirm]', error.message); }
+  }, 3000);
+  confirmTimer.unref();
+};
+scheduleMockConfirms();
 
 // 지급대행사의 이체 결과 통지. 서명이 맞을 때만 반영하고, 같은 통지가 여러 번 와도 한 번만 처리한다.
 function readRaw(request, limit = 64 * 1024) {
@@ -619,6 +671,7 @@ async function handleApi(request, response, url) {
     }
     if (db.webhooks?.some(item => item.status === 'queued')) setImmediate(deliverWebhooks);
     schedulePayouts();
+    scheduleMockConfirms();
     const plain = typeof result === 'string' && ['resetPassword', 'regenerateKey'].includes(op) ? result : op === 'requestReset' ? result : clean(result);
     return json(response, 200, { result: plain, state: view(next) }, headers);
   } catch (error) {

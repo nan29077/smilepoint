@@ -1,5 +1,5 @@
 import { animals, categories, config, escape, format, icon, providers } from '../catalog.js';
-import { account, payoutLabels, statuses, types } from '../state.js';
+import { account, chargeMethods, direction, payoutLabels, percent, statuses, types } from '../state.js';
 
 export const money = value => `${format(value)} <small>${config.point}</small>`;
 export const showDate = value => new Intl.DateTimeFormat('ko-KR', { timeZone: 'Asia/Seoul', dateStyle: 'medium' }).format(new Date(value));
@@ -104,6 +104,17 @@ export function withdrawalFlow(row, viewer) {
 }
 export function exchangeFlow(row) {
   if (['rejected', 'canceled'].includes(row.status)) return '';
+  if (row.flow === 'push') {
+    // 웹하드 전환: 넘어옴(미확정) → 회원 확정 → 웹하드 사용 승인 → 사용 가능
+    const stage = row.status === 'held' ? 1 : row.status === 'confirming' ? 2 : 3;
+    const at = index => index < stage ? 'done' : index === stage ? 'now' : 'todo';
+    return flow([
+      { label: '웹하드에서 넘어옴', hint: showTime(row.date), state: 'done' },
+      { label: '포인트 확정', hint: stage > 1 ? '확정 요청' : '확정 전', state: at(1) },
+      { label: '웹하드 승인', hint: stage > 2 ? '승인' : stage === 2 ? '승인 대기' : '', state: at(2) },
+      { label: '사용 가능', hint: stage > 2 && row.updated ? showTime(row.updated) : '', state: stage > 2 ? 'done' : 'todo' },
+    ]);
+  }
   const done = row.status === 'complete';
   return flow([
     { label: '신청', hint: showTime(row.date), state: 'done' },
@@ -117,11 +128,15 @@ export function statusPill(row, viewer) {
     return failed && viewer?.role === 'admin' ? pill('이체 실패', 'rejected') : pill(failed ? '이체 확인 중' : '이체 중', 'processing');
   }
   if (row.type === 'withdrawal' && row.status === 'pending') return pill('심사 대기', 'pending');
+  if (row.status === 'held') return pill('미확정', 'pending');
+  if (row.status === 'confirming') return pill('승인 대기', 'processing');
+  if (row.type === 'exchange' && row.flow === 'push' && row.status === 'complete' && !row.reversed) return pill('확정 완료', 'complete');
+  if (row.type === 'charge' && row.status === 'pending') return pill('결제 대기', 'pending');
   if (row.status === 'pending' && row.partnerApproved) return pill(viewer?.role === 'user' ? '승인 진행 중' : '2차 승인 대기', 'pending');
   if (row.reversed) return pill('회수됨', 'rejected');
   return pill(statuses[row.status] ?? row.status, row.status);
 }
-const needsAction = (row, viewer) => viewer.role !== 'user' && (row.status === 'pending' || (viewer.role === 'admin' && row.status === 'processing' && row.payout?.status === 'failed'));
+const needsAction = (row, viewer) => viewer.role !== 'user' && ((row.status === 'pending' && row.type !== 'charge') || (viewer.role === 'admin' && row.status === 'processing' && row.payout?.status === 'failed'));
 
 // ───────── 상품 ─────────
 const categoryArt = { 카페: 'coffee', 외식: 'shop', 편의점: 'store', 디저트: 'cake', 문화: 'film', 상품권: 'card' };
@@ -151,14 +166,15 @@ export function filteredProducts(state, category, query = '') {
 
 // ───────── 거래 표 ─────────
 export function transactionLabel(state, row) {
-  if (row.type === 'exchange') return escape(partnerName(state, row.partner)) + ' · ' + format(row.source) + ' P';
+  if (row.type === 'exchange') return escape(partnerName(state, row.partner)) + ' · ' + format(row.source) + ' P' + (row.flow === 'push' ? ' 전환' : '');
+  if (row.type === 'charge') return escape(chargeMethods[row.method] ?? row.memo ?? '충전');
   if (row.type === 'reversal') return escape(partnerName(state, row.partner)) + ' 교환 회수 · ' + escape(row.memo ?? '');
   if (row.type === 'coupon') return escape(productName(state, row.product));
   if (row.type === 'withdrawal') return escape(row.bank ?? '등록 계좌') + ' · 실수령 ' + format(row.points - (row.fee ?? 0)) + '원';
   if (row.type === 'gift_out' || row.type === 'gift_in') return (row.type === 'gift_out' ? '받는 분 ' : '보낸 분 ') + escape(row.counterpartName ?? '');
   return escape(row.memo ?? '');
 }
-const signed = row => (['exchange', 'attendance', 'reward', 'gift_in'].includes(row.type) || (row.type === 'adjust' && row.points > 0) ? '+' : '−') + format(Math.abs(row.points)) + ' P';
+const signed = row => (direction(row) === 'in' ? '+' : '−') + format(Math.abs(row.points)) + ' P';
 
 // 거래 상태 배지: 2차 승인 대기·회수 여부까지 표시한다.
 // 긴 목록은 처음 limit건만 그리고 '더 보기'로 늘린다 (ui.more).
@@ -188,8 +204,11 @@ export function details(state, row, viewer) {
     <div><span>회원</span><strong>${escape(owner?.name ?? '—')}</strong></div>
     <div><span>거래 내용</span><strong>${transactionLabel(state, row.counterpart ? { ...row, counterpartName: account(state, row.counterpart)?.name } : row)}</strong></div>
     ${row.type === 'exchange' ? `<div><span>교환 비율</span><strong>${row.rate}:1</strong></div>` : ''}
+    ${row.type === 'exchange' && row.flow === 'push' ? `<div><span>웹하드 거래번호</span><strong>${escape(row.transferId ?? '—')}</strong></div><div><span>웹하드 차감</span><strong>${format(row.source)} P</strong></div>${row.confirmId ? `<div><span>확정 요청</span><strong>${escape(row.confirmId)}</strong></div>` : ''}` : ''}
+    ${row.type === 'charge' ? `<div><span>결제 수단</span><strong>${escape(chargeMethods[row.method] ?? '—')}</strong></div><div><span>사용처</span><strong>쿠폰·상품권 구매 전용 (출금 불가)</strong></div>${staff && row.pg?.ref ? `<div><span>결제 거래번호</span><strong>${escape(row.pg.provider ?? '')} ${escape(row.pg.ref)}</strong></div>` : ''}` : ''}
+    ${row.type === 'coupon' && row.paid?.charge ? `<div><span>결제 구성</span><strong>충전 ${format(row.paid.charge)} P${row.paid.point ? ' + 포인트 ' + format(row.paid.point) + ' P' : ''}</strong></div>` : ''}
     <div><span>거래 포인트</span><strong>${money(Math.abs(row.points))}</strong></div>
-    ${row.type === 'withdrawal' ? `<div><span>수수료</span><strong>${money(row.fee ?? 0)}</strong></div><div><span>실수령액</span><strong>${format(row.points - (row.fee ?? 0))}원</strong></div>` : ''}
+    ${row.type === 'withdrawal' ? `<div><span>수수료${row.feeRate !== undefined ? ` (${percent(row.feeRate)}, 부가세 포함)` : ''}</span><strong>${money(row.fee ?? 0)}</strong></div><div><span>실수령액</span><strong>${format(row.points - (row.fee ?? 0))}원</strong></div>` : ''}
     <div><span>신청 일시</span><strong>${showTime(row.date)}</strong></div>
     <div><span>상태</span>${statusPill(row, viewer)}</div>
     ${row.partnerApproved && row.status === 'pending' ? `<div><span>2차 승인 사유</span><strong>${escape(row.review ?? '')}</strong></div>` : ''}

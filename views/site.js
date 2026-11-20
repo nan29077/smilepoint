@@ -110,13 +110,15 @@ function stats(state) {
 }
 
 export function landing(state, index) {
-  const fee = state.settings.fee;
+  const rate = state.settings.withdrawFeeRate ?? 0;
+  const fee = Math.round(10000 * rate / 100);
+  const rateText = (Math.round(rate * 100) / 100) + '%';
   const example = `<div class="story-example"><span>그린파일 12,000 P</span><strong>스마일 6,000 P 적립</strong></div>`;
-  const terms = [['최소 신청 금액', format(state.settings.withdrawalMinimum) + ' P'], ['건당 수수료', format(fee) + ' P (등급별 할인)'], ['예상 입금일', '승인 후 다음 영업일']];
+  const terms = [['최소 신청 금액', format(state.settings.withdrawalMinimum) + ' P'], ['출금 수수료', rateText + ' (부가세 포함)'], ['예상 입금일', '승인 후 다음 영업일']];
   const steps = [
     ['user', '회원가입', `카카오·네이버 또는 이메일로 30초 만에 가입하세요. 첫 교환을 마치면 가입 축하 ${format(state.settings.signupBonus)} P를 드려요.`],
-    ['link', '웹하드 연결', '포인트가 있는 웹하드 계정을 연결하면 교환 가능 잔액이 표시돼요.'],
-    ['exchange', '교환 신청', '받을 포인트를 확인하고 신청하세요. 승인되면 알림을 보내 드려요.'],
+    ['link', '웹하드 연결', '포인트가 있는 웹하드 계정을 스마일 포인트에 연결하세요.'],
+    ['exchange', '전환하고 확정', '웹하드에서 스마일 포인트로 전환을 신청하고, 넘어온 포인트를 확정하면 바로 사용할 수 있어요.'],
     ['gift', '출금 또는 쇼핑', '계좌로 출금하거나 모바일 쿠폰을 사고, 친구에게 선물할 수도 있어요.'],
   ];
   return `${state.settings.maintenance ? `<div class="maintenance">${icon('alert', 17)} 서비스 점검 중입니다. 일부 기능 이용이 제한될 수 있습니다.</div>` : ''}${header(state, { stickyOnMobile: true })}<main id="main">
@@ -132,7 +134,7 @@ export function landing(state, index) {
     <section class="section cash-section" id="withdraw" aria-label="계좌 출금"><div class="container">
       ${storyBanner('withdrawal', `<div class="story-example"><span>10,000 P 출금 예시</span><strong>${format(10000 - fee)}원 실수령</strong></div>`)}
       <dl class="cash-terms">${terms.map(([label, value]) => `<div><dt>${label}</dt><dd>${value}</dd></div>`).join('')}</dl>
-      <div class="grade-strip">${grades.map(g => [g.name, g.feeRate ? format(Math.round(fee * g.feeRate)) + ' P' : '무료']).map(([name, value], i) => `<div class="g${i}"><span>${icon('trophy', 18)} ${name}</span><strong>출금 수수료 ${value}</strong></div>`).join('')}</div>
+      <div class="grade-strip">${grades.map(g => [g.name, state.settings.gradeFeeDiscount ? (g.feeRate ? (Math.round(rate * g.feeRate * 100) / 100) + '%' : '무료') : rateText]).map(([name, value], i) => `<div class="g${i}"><span>${icon('trophy', 18)} ${name}</span><strong>출금 수수료 ${value}</strong></div>`).join('')}</div>
     </div></section>
     <section class="shopping section" id="shop"><div class="container">
       <div class="section-head">${heading('포인트 쇼핑', '오늘은 어떤 선물을 고를까요?', '커피 한 잔부터 외식, 영화 관람권과 상품권까지 포인트로 바로 구매하세요.')}${button('쇼핑하러 가기', '#app/user/shop', 'btn outline')}</div>
