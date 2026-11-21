@@ -1,10 +1,10 @@
 import { escape, format, grades, icon } from '../catalog.js';
 import { account, balances, direction, feePercent, grade, kstDay, monthly, receivables, series, settleCycles } from '../state.js';
-import { statementsPage } from './settle.js';
-import { pendingQueue, settlementTable } from './partner.js';
-import { slides } from './site.js';
-import { activityFilters, applyFilters, confirmationTable } from './user.js';
-import { action, announcementList, avatar, barChart, blank, button, donut, maskAccount, metric, money, moreButton, pageSize, panel, pill, productVisual, providerName, showDate, showTime, statusPill, table, trend, transactionLabel } from './ui.js';
+import { statementsPage } from './settle.js?v=coin-1120';
+import { pendingQueue, settlementTable } from './partner.js?v=coin-1120';
+import { slides } from './site.js?v=coin-1120';
+import { activityFilters, applyFilters, confirmationTable } from './user.js?v=coin-1120';
+import { action, announcementList, avatar, barChart, blank, button, donut, maskAccount, metric, money, moreButton, pageSize, panel, pill, productVisual, providerName, showDate, showTime, statusPill, table, trend, transactionLabel } from './ui.js?v=coin-1120';
 
 export const adminMenu = [
   ['대시보드', [['overview', 'home', '운영 개요'], ['report', 'activity', '통계 리포트']]],

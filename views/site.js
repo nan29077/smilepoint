@@ -1,7 +1,7 @@
 import { config, escape, faqFor, format, grades, icon, socialMark, testAccounts, testPassword } from '../catalog.js';
 import { current, publicStats } from '../state.js';
-import { legalBody, legalDocs } from './legal.js';
-import { announcementList, avatar, brand, button, faqList, heading, productCards } from './ui.js';
+import { legalBody, legalDocs } from './legal.js?v=coin-1120';
+import { announcementList, avatar, brand, button, faqList, heading, productCards } from './ui.js?v=coin-1120';
 
 export const slides = [
   { image: 'hero-exchange-v2', mobileImage: 'hero-exchange-mobile-v3', label: '포인트 교환', title: ['흩어진 포인트,', '한곳에 모으세요.'], copy: '여러 웹하드에 쌓인 포인트를 스마일 포인트로 모아\n계좌로 출금하거나 모바일 쿠폰으로 바꿔 보세요.', button: '포인트 교환하기', page: 'exchange' },

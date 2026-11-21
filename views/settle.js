@@ -1,7 +1,7 @@
 // 웹하드 정산서 화면 — 최고 관리자와 웹하드 관리자가 함께 사용한다.
 import { escape, format, icon } from '../catalog.js';
 import { account, kstDay, receivables, settleCycles, statementPeriods, statementRows } from '../state.js';
-import { action, blank, panel, pill, showDate, showTime } from './ui.js';
+import { action, blank, panel, pill, showDate, showTime } from './ui.js?v=coin-1120';
 
 const won = value => format(value) + '원';
 

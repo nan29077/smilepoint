@@ -1,8 +1,8 @@
 import { escape, format, icon } from '../catalog.js';
 import { account, feePercent, kstDay, linkRequests, monthly, series, settlementStatus, visibleTransactions } from '../state.js';
-import { activityFilters, applyFilters, confirmationTable } from './user.js';
-import { statementsPage } from './settle.js';
-import { action, ago, avatar, barChart, blank, button, donut, metric, money, panel, pill, showTime, table, trend } from './ui.js';
+import { activityFilters, applyFilters, confirmationTable } from './user.js?v=coin-1120';
+import { statementsPage } from './settle.js?v=coin-1120';
+import { action, ago, avatar, barChart, blank, button, donut, metric, money, panel, pill, showTime, table, trend } from './ui.js?v=coin-1120';
 
 export const partnerMenu = [
   ['업무', [['overview', 'home', '자사 개요'], ['confirms', 'check', '포인트 확정 요청'], ['requests', 'exchange', '회원 연결·교환'], ['activity', 'file', '거래 내역'], ['members', 'users', '회원 현황']]],

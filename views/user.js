@@ -1,6 +1,6 @@
 import { animals, banks, escape, faqFor, format, grades, icon, providers, ticketCategories } from '../catalog.js';
 import { activeEvents, balances, chargedToday, chargeMethods, confirmingFor, direction, feePercent, feeRateFor, grade, kstDay, notificationsFor, partnerAvailable, percent, series, streak, types, unconfirmedFor, visibleTransactions, withdrawnToday } from '../state.js';
-import { action, animalIndex, announcementList, avatar, barChart, barcode, blank, button, donut, exchangeFlow, faqList, maskAccount, metric, money, panel, pill, productCard, productCards, productName, progress, providerName, showDate, showTime, table, transactionLabel, trend, withdrawalFlow } from './ui.js';
+import { action, animalIndex, announcementList, avatar, barChart, barcode, blank, button, donut, exchangeFlow, faqList, maskAccount, metric, money, panel, pill, productCard, productCards, productName, progress, providerName, showDate, showTime, table, transactionLabel, trend, withdrawalFlow } from './ui.js?v=coin-1120';
 
 export const userMenu = [
   ['개인', [['overview', 'home', '내 지갑'], ['exchange', 'exchange', '포인트 교환·확정'], ['withdrawal', 'bank', '계좌 출금'], ['charge', 'card', '포인트 충전'], ['shop', 'shop', '포인트 쇼핑'], ['coupons', 'ticket', '쿠폰함']]],

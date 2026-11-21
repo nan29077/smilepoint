@@ -1,9 +1,9 @@
 import { escape, icon, roles } from '../catalog.js';
 import { linkRequests, notificationsFor } from '../state.js';
-import { adminDescriptions, adminMenu, adminPage } from './admin.js';
-import { partnerDescriptions, partnerMenu, partnerPage } from './partner.js';
-import { avatar, brand, setPaging } from './ui.js';
-import { profilePage, supportPage, userDescriptions, userMenu, userPage } from './user.js';
+import { adminDescriptions, adminMenu, adminPage } from './admin.js?v=coin-1120';
+import { partnerDescriptions, partnerMenu, partnerPage } from './partner.js?v=coin-1120';
+import { avatar, brand, setPaging } from './ui.js?v=coin-1120';
+import { profilePage, supportPage, userDescriptions, userMenu, userPage } from './user.js?v=coin-1120';
 
 export const menus = { user: userMenu, partner: partnerMenu, admin: adminMenu };
 const descriptions = { user: userDescriptions, partner: partnerDescriptions, admin: adminDescriptions };

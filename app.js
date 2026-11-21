@@ -1,13 +1,13 @@
 import { clean, dispatch } from './actions.js';
 import { config, escape, format, icon, providers, socialMark } from './catalog.js';
 import * as S from './state.js';
-import { memberDetail, partnerForm, productForm } from './views/admin.js';
-import { statementDetail } from './views/settle.js';
-import { dashboard, pages, pageTitle } from './views/dashboard.js';
-import { legalBody } from './views/legal.js';
-import { hero, landing, legalPage, login, resetPage, signup, slides, socialAvailable, socialTermsPage, termsFields } from './views/site.js?v=5320af4';
-import { barcode, details, filteredProducts, money, productVisual, showDate } from './views/ui.js';
-import { notificationList } from './views/user.js';
+import { memberDetail, partnerForm, productForm } from './views/admin.js?v=coin-1120';
+import { statementDetail } from './views/settle.js?v=coin-1120';
+import { dashboard, pages, pageTitle } from './views/dashboard.js?v=coin-1120';
+import { legalBody } from './views/legal.js?v=coin-1120';
+import { hero, landing, legalPage, login, resetPage, signup, slides, socialAvailable, socialTermsPage, termsFields } from './views/site.js?v=coin-1120';
+import { barcode, details, filteredProducts, money, productVisual, showDate } from './views/ui.js?v=coin-1120';
+import { notificationList } from './views/user.js?v=coin-1120';
 
 const app = document.querySelector('#app');
 const modal = document.querySelector('#modal');
